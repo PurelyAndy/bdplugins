@@ -1,0 +1,2 @@
+# bdplugins
+my betterdiscord plugins
