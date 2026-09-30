@@ -22,7 +22,7 @@ const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getMangled(
     Object.fromEntries(['Editor', 'Node', 'Element'].map(k => [k, Filters.byKeys('is' + k)])),
     { mapDeclarations: true }
 );
-
+let avoidInfiniteLoop = false;
 module.exports = class CleanPastedCodeIndents {
     start() {
         Patcher.before('CleanPastedCodeIndents', HistoryEditor, 'withSingleEntry', (_, args) => {
@@ -32,6 +32,10 @@ module.exports = class CleanPastedCodeIndents {
             if (!editor || !callback
                 || typeof callback !== "function"
                 || !callback.toString().includes('{always:!0}')) {
+                return;
+            }
+
+            if (avoidInfiniteLoop) {
                 return;
             }
 
@@ -64,34 +68,45 @@ module.exports = class CleanPastedCodeIndents {
                             path: oldAnchor.path
                         }
                     };
-                
+                    const prevParaSelection = {
+                        anchor: {
+                            offset: 0,
+                            path: [Math.max(0, oldAnchor.path[0] - 1), 0]
+                        },
+                        focus: {
+                            offset: 0,
+                            path: [oldAnchor.path[0], 0]
+                        }
+                    };
+
                     editor.selection = toBeginningOfParaSelection;
                     const toBeginningOfParaText = getFragmentText(editor);
                     const atStartOfPara = toBeginningOfParaText.length === 0;
                     const atStartOfLine = atStartOfPara || toBeginningOfParaText.endsWith("\n");
-                    
+
                     let prevText;
                     let deltaIndent = 0;
                     if (atStartOfPara) {
-                        editor.selection = {
-                            anchor: {
-                                offset: 0,
-                                path: [Math.max(0, oldAnchor.path[0] - 1), 0]
-                            },
-                            focus: {
-                                offset: 0,
-                                path: [oldAnchor.path[0], 0]
-                            }
-                        };
+                        editor.selection = prevParaSelection;
                         prevText = getFragmentText(editor).split("\n").slice(-2, -1)[0] || "";
                     } else {
-                        const prevLine = toBeginningOfParaText.split("\n").slice(-2, -1)[0];
+                        const lines = toBeginningOfParaText.split("\n");
+                        let prevLine;
+
+                        if (lines.length > 1) {
+                            prevLine = lines[lines.length - 2];
+                        } else if (oldAnchor.path[0] > 0) {
+                            editor.selection = prevParaSelection;
+                            prevLine = getFragmentText(editor).split("\n").slice(-2, -1)[0] || "";
+                        } else {
+                            prevText = toBeginningOfParaText.split("\n").pop();
+                        }
+
                         if (atStartOfLine && prevLine) {
                             prevText = prevLine;
                         } else {
                             prevText = toBeginningOfParaText.split("\n").pop();
                             if (prevText.trim() === "") {
-                                const prevLine = toBeginningOfParaText.split("\n").slice(-2, -1)[0];
                                 if (prevLine) {
                                     const prevLineIndent = prevLine.search(/\S|$/);
                                     const prevTextIndent = prevText.search(/\S|$/);
@@ -103,16 +118,16 @@ module.exports = class CleanPastedCodeIndents {
                             }
                         }
                     }
-                
+
                     prevText = prevText.replace(/\t/g, "    ");
                     const prevIndent = " ".repeat(prevText.search(/\S|$/));
-                
+
                     editor.selection = pastedTextSelection;
                     const pastedText = getFragmentText(editor);
-                
+
                     let newText = pastedText;
                     const lines = pastedText.split('\n');
-                
+
                     if (lines.length > 1) {
                         let minIndent = Infinity;
                         for (let i = 1; i < lines.length; i++) {
@@ -120,7 +135,7 @@ module.exports = class CleanPastedCodeIndents {
                             if (line.trim() === "") {
                                 continue;
                             }
-                        
+
                             const indent = line.search(/\S/);
                             if (indent !== -1 && indent < minIndent) {
                                 minIndent = indent;
@@ -139,15 +154,12 @@ module.exports = class CleanPastedCodeIndents {
                     } else {
                         newText = pastedText.trimStart();
                     }
-                
+
                     editor.selection = pastedTextSelection;
                     editor.deleteFragment();
-                    editor.apply({
-                        type: "insert_text",
-                        path: oldAnchor.path,
-                        offset: oldAnchor.offset,
-                        text: newText,
-                    });
+                    avoidInfiniteLoop = true;
+                    editor.insertText(newText);
+                    avoidInfiniteLoop = false;
                 });
             };
         });
