@@ -1,7 +1,7 @@
 /**
  * @name CleanPastedCodeIndents
  * @author PurelyAndy
- * @description Attempts to match the indentation of pasted code to the indentation of where it's pasted.
+ * @description Attempts to match the indentation of pasted code to the indentation of where it's pasted. Also adds a button to clean the indentation of code blocks.
  * @version 1.0.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
@@ -9,7 +9,7 @@
  * @runAt idle
  */
 
-const { Webpack, Patcher, Data, React } = BdApi;
+const { Webpack, Patcher, Utils, React, Components } = BdApi;
 const Filters = Webpack.Filters;
 
 const [HistoryEditorModule, HistoryEditorKey] = Webpack.getWithKey(
@@ -22,8 +22,18 @@ const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getMangled(
     Object.fromEntries(['Editor', 'Node', 'Element'].map(k => [k, Filters.byKeys('is' + k)]))
 );
 
+const { codeBlock } = Webpack.getByKeys("defaultRules", "parseTopic").defaultRules;
+const [ divButton ] = Object.values(Webpack.getBySource('defaultProps={tag:"div",role:"button"'));
+
 module.exports = class CleanPastedCodeIndents {
     start() {
+        Patcher.instead('CleanPastedCodeIndents', codeBlock, 'react', (_, args, original) => {
+            return React.createElement(Components.ErrorBoundary,
+                { name: "CleanPastedCodeIndents", id: "CodeBlockWrapper" },
+                React.createElement(CodeBlockWrapper, { original, args })
+            );
+        });
+
         let avoidInfiniteLoop = false;
         Patcher.before('CleanPastedCodeIndents', HistoryEditor, 'withSingleEntry', (_, args) => {
             const editor = args[0];
@@ -125,43 +135,8 @@ module.exports = class CleanPastedCodeIndents {
                     editor.selection = pastedTextSelection;
                     const pastedText = getFragmentText(editor);
 
-                    let newText = pastedText;
                     const lines = pastedText.split('\n');
-
-
-                    if (lines.length > 1) {
-                        const nextLineIndent = lines[1].search(/\S|$/);
-
-                        let minIndent = Infinity;
-                        const indents = new Set();
-
-                        for (let i = 1; i < lines.length; i++) {
-                            const line = lines[i];
-                            if (line.trim() === "") {
-                                continue;
-                            }
-
-                            const indent = line.search(/\S/);
-                            if (indent !== -1 && indent < minIndent) {
-                                minIndent = indent;
-                                indents.add(indent);
-                            }
-                        }
-
-                        const heuristicAddIndentLevel = minIndent >= nextLineIndent && [..."{[(:"].some(c => lines[0].trim().endsWith(c));
-                        const indentSize = heuristicAddIndentLevel ? findIndentSize(indents) : 0;
-
-                        if (minIndent !== Infinity) {
-                            const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))];
-                            const newLines = [
-                                (atStartOfLine ? prevIndent : " ".repeat(deltaIndent)) + trimmedLines[0],
-                                ...trimmedLines.slice(1).map(line => prevIndent + " ".repeat(indentSize) + line)
-                            ];
-                            newText = newLines.join('\n');
-                        }
-                    } else {
-                        newText = pastedText.trimStart();
-                    }
+                    const newText = cleanIndentation(lines, atStartOfLine, prevIndent, deltaIndent);
 
                     editor.selection = pastedTextSelection;
                     editor.deleteFragment();
@@ -176,6 +151,113 @@ module.exports = class CleanPastedCodeIndents {
         Patcher.unpatchAll('CleanPastedCodeIndents');
     }
 };
+
+function cleanIndentation(lines, atStartOfLine = false, prevIndent = "", deltaIndent = 0) {
+    if (lines.length <= 1) {
+        return lines.join('\n').trimStart();
+    }
+    const { minIndent, indentSize } = calculateIndentInfo(lines);
+    if (minIndent !== Infinity) {
+        const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))];
+        const newLines = [
+            (atStartOfLine ? prevIndent : " ".repeat(deltaIndent)) + trimmedLines[0],
+            ...trimmedLines.slice(1).map(line => prevIndent + " ".repeat(indentSize) + line)
+        ];
+        return newLines.join('\n');
+    }
+}
+
+function calculateIndentInfo(lines) {
+    const nextLineIndent = lines[1].search(/\S|$/);
+
+    let minIndent = Infinity;
+    const indents = new Set();
+
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim() === "") {
+            continue;
+        }
+
+        const indent = line.search(/\S/);
+        if (indent !== -1) {
+            indents.add(indent);
+            if (indent < minIndent) {
+                minIndent = indent;
+            }
+        }
+    }
+
+    const heuristicAddIndentLevel = minIndent >= nextLineIndent && [..."{[(:"].some(c => lines[0].trim().endsWith(c));
+    const indentSize = heuristicAddIndentLevel ? findIndentSize(indents) : 0;
+
+    return { minIndent, indentSize };
+}
+
+var findInReactTree = (root, filter) => Utils.findInTree(root, filter, { walkable: ['props', 'children'] });
+
+function CodeBlockWrapper({ original, args }) {
+    const [cleaned, setCleaned] = React.useState(false);
+
+    if (args[0].otherContent) {
+        [args[0].otherContent, args[0].content] = [args[0].content, args[0].otherContent];
+    } else {
+        args[0].otherContent = cleanIndentation(args[0].content.split('\n'));
+    }
+    const tree = original(...args);
+
+    const targetNode = findInReactTree(tree, n => n?.props?.className?.includes('codeActions'));
+
+    if (targetNode) {
+        const existingChildren = React.Children.toArray(targetNode.props.children);
+        targetNode.props.children = [
+            ...existingChildren,
+            React.createElement(divButton, {
+                onClick: (e) => {
+                    e.stopPropagation();
+                    setCleaned(prev => !prev);
+                },
+                children: React.createElement(cleaned ? IconIncreaseIndent : IconDecreaseIndent)
+            })
+        ];
+    }
+
+    return tree;
+}
+
+const IconDecreaseIndent = () => React.createElement('svg', {
+    xmlns: 'http://www.w3.org/2000/svg',
+    viewBox: '0 0 24 24',
+    width: '18',
+    height: '18',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: '2',
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round'
+},
+    React.createElement('line', { x1: '3', y1: '4', x2: '21', y2: '4' }),
+    React.createElement('line', { x1: '11', y1: '10.5', x2: '21', y2: '10.5' }),
+    React.createElement('line', { x1: '11', y1: '17', x2: '21', y2: '17' }),
+    React.createElement('polyline', { points: '7 9 4 12 7 15' })
+);
+
+const IconIncreaseIndent = () => React.createElement('svg', {
+    xmlns: 'http://www.w3.org/2000/svg',
+    viewBox: '0 0 24 24',
+    width: '18',
+    height: '18',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: '2',
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round'
+},
+    React.createElement('line', { x1: '3', y1: '4', x2: '21', y2: '4' }),
+    React.createElement('line', { x1: '11', y1: '10.5', x2: '21', y2: '10.5' }),
+    React.createElement('line', { x1: '11', y1: '17', x2: '21', y2: '17' }),
+    React.createElement('polyline', { points: '4 9 7 12 4 15' })
+);
 
 function findIndentSize(indents) {
     const values = [...indents].sort((a, b) => a - b);
