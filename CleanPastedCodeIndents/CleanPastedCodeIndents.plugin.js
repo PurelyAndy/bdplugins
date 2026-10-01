@@ -19,12 +19,12 @@ const [HistoryEditorModule, HistoryEditorKey] = Webpack.getWithKey(
 const HistoryEditor = HistoryEditorModule[HistoryEditorKey];
 const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getMangled(
     'Could not completely normalize the editor',
-    Object.fromEntries(['Editor', 'Node', 'Element'].map(k => [k, Filters.byKeys('is' + k)])),
-    { mapDeclarations: true }
+    Object.fromEntries(['Editor', 'Node', 'Element'].map(k => [k, Filters.byKeys('is' + k)]))
 );
-let avoidInfiniteLoop = false;
+
 module.exports = class CleanPastedCodeIndents {
     start() {
+        let avoidInfiniteLoop = false;
         Patcher.before('CleanPastedCodeIndents', HistoryEditor, 'withSingleEntry', (_, args) => {
             const editor = args[0];
             const callback = args[1];
@@ -128,8 +128,13 @@ module.exports = class CleanPastedCodeIndents {
                     let newText = pastedText;
                     const lines = pastedText.split('\n');
 
+
                     if (lines.length > 1) {
+                        const nextLineIndent = lines[1].search(/\S|$/);
+
                         let minIndent = Infinity;
+                        const indents = new Set();
+
                         for (let i = 1; i < lines.length; i++) {
                             const line = lines[i];
                             if (line.trim() === "") {
@@ -139,16 +144,19 @@ module.exports = class CleanPastedCodeIndents {
                             const indent = line.search(/\S/);
                             if (indent !== -1 && indent < minIndent) {
                                 minIndent = indent;
+                                indents.add(indent);
                             }
                         }
+
+                        const heuristicAddIndentLevel = minIndent >= nextLineIndent && [..."{[(:"].some(c => lines[0].trim().endsWith(c));
+                        const indentSize = heuristicAddIndentLevel ? findIndentSize(indents) : 0;
+
                         if (minIndent !== Infinity) {
                             const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))];
-                            let newLines;
-                            if (atStartOfLine) {
-                                newLines = trimmedLines.map(line => prevIndent + line);
-                            } else {
-                                newLines = [" ".repeat(deltaIndent) + trimmedLines[0], ...trimmedLines.slice(1).map(line => prevIndent + line)];
-                            }
+                            const newLines = [
+                                (atStartOfLine ? prevIndent : " ".repeat(deltaIndent)) + trimmedLines[0],
+                                ...trimmedLines.slice(1).map(line => prevIndent + " ".repeat(indentSize) + line)
+                            ];
                             newText = newLines.join('\n');
                         }
                     } else {
@@ -168,6 +176,34 @@ module.exports = class CleanPastedCodeIndents {
         Patcher.unpatchAll('CleanPastedCodeIndents');
     }
 };
+
+function findIndentSize(indents) {
+    const values = [...indents].sort((a, b) => a - b);
+
+    if (values.length === 1) {
+        if ((values[0] % 4) === 0) return 4;
+        if ((values[0] % 2) === 0) return 2;
+        if ((values[0] % 3) === 0) return 3;
+        return values[0];
+    }
+
+    const diffs = [];
+
+    for (let i = 1; i < values.length; i++) {
+        const diff = values[i] - values[i - 1];
+
+        if (diff > 0) {
+            diffs.push(diff);
+        }
+    }
+    
+    return diffs.reduce((a, b) => {
+        while (b !== 0) {
+            [a, b] = [b, a % b];
+        }
+        return a;
+    });
+}
 
 // Editor.string() doesn't separate paragraphs with newlines, so we have to do it ourselves.
 
