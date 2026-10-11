@@ -5,7 +5,7 @@
  * @version 1.0.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
- * @source https://github.com/PurelyAndy/GoFileUpload
+ * @source https://github.com/PurelyAndy/bdplugins/tree/main/GoFileUpload
  * @runAt idle
  */
 
@@ -17,11 +17,11 @@ const MessageActions = Webpack.getByKeys('jumpToMessage', '_sendMessage');
 const CloudUploader = Webpack.getByPrototypeKeys('uploadFileToCloud', { searchExports: true });
 const [CheckFilesModule, openModalIfFileExceedsSizeKey] = Webpack.getWithKey(
     Filters.byStrings('Unexpected mismatch between files and file metadata'),
-    { target: Webpack.getModule(Webpack.Filters.bySource('Unexpected mismatch between files and file metadata')) }
+    { target: Webpack.getBySource('Unexpected mismatch between files and file metadata') }
 );
 const { getGuildMaxFileSize } = Webpack.getMangled(
-    Filters.bySource('location:"getGuildMaxFileSize"'),
-    { getGuildMaxFileSize: Filters.byStrings('location:"getGuildMaxFileSize"') }
+    'MAX_FILE_SIZE_100_MB,',
+    { getGuildMaxFileSize: Filters.byStrings('.getGuild(') }
 );
 const MessageStoreDispatcher = Webpack.Stores.MessageStore._dispatcher;
 const MessageQueue = Webpack.getByKeys('handleSend');
