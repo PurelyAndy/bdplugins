@@ -5,7 +5,7 @@
  * @version 1.0.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
- * @source https://github.com/PurelyAndy/BringBackTenor
+ * @source https://github.com/PurelyAndy/bdplugins/tree/main/BringBackTenor
  * @runAt idle
  */
 
@@ -16,7 +16,7 @@ const API_V2_KEY = 'AIzaSyAp4Ie-x-F5nLqwoqvDFrJGI4purWdGIVo';
 
 const KlipyTextModule = Webpack.getMangled(
     '="Klipy"',
-    { getSearchKlipyText: e => e instanceof Function && e.toString().includes('intl') },
+    { getSearchKlipyText: Filters.byStrings('intl') },
 );
 
 const GIFPicker = Webpack.getMangled(
@@ -29,6 +29,8 @@ const GIFPicker = Webpack.getMangled(
     { mapDeclarations: true }
 );
 
+const lodash = Webpack.getByKeys('bindAll', 'debounce');
+
 const { GIFPickerViewStore, LocaleStore } = Webpack.Stores;
 const Dispatcher = GIFPickerViewStore._dispatcher
 
@@ -37,19 +39,23 @@ function getMediaFormat(mediaFormat) {
     return mediaFormat === 'webm' ? 'webm' : mediaFormat === 'mp4' ? 'mp4' : mediaFormat === 'tinywebp' ? 'webp_transparent' : 'tinygif';
 }
 
+const throttledSearch = lodash.throttle((query) => {
+    fetchSearchResults(query).then(results => {
+        Dispatcher.dispatch({
+            type: "GIF_PICKER_QUERY_SUCCESS",
+            query: query,
+            items: results || getErrGif()
+        });
+    });
+}, 500, { leading: true, trailing: true });
+
 module.exports = class BringBackTenor {
     start() {
         Patcher.after('BringBackTenor', KlipyTextModule, "getSearchKlipyText", (_, __, ret) => ret.replace('Klipy', 'Tenor'))
         
         Patcher.instead('BringBackTenor', GIFPicker, "foundSearch", (_, args, __) => {
             const query = args[0];
-            fetchSearchResults(query).then(results => {
-                Dispatcher.dispatch({
-                    type: "GIF_PICKER_QUERY_SUCCESS",
-                    query: query,
-                    items: results || getErrGif()
-                });
-            });
+            throttledSearch(query);
         });
 
         Patcher.instead('BringBackTenor', GIFPicker, "foundTrending", (_, __, ___) => {
