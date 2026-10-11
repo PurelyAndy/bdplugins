@@ -12,8 +12,6 @@
 const { Webpack, Patcher, Utils, React, Components } = BdApi;
 const Filters = Webpack.Filters;
 
-const fs = require('fs');
-
 const [HistoryEditorModule, HistoryEditorKey] = Webpack.getWithKey(
     t => t.withSingleEntry,
     { target: Webpack.getBySource('withSingleEntry:(') }
@@ -327,7 +325,7 @@ function getFragmentText(editor) {
     return text.substring(0, text.length - 1); // remove the last newline
 } */
 
-
+//const fs = require('fs');
 //const classifierWeights = fs.readFileSync(__dirname + '/model_weights.json', 'utf8');
 //const compactWeights = fs.readFileSync(__dirname + '/model_weights.compact', 'binary');
 
