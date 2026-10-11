@@ -5,11 +5,11 @@
  * @version 1.0.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
- * @source https://github.com/PurelyAndy/QuickSwitcherPins
+ * @source https://github.com/PurelyAndy/bdplugins/tree/main/QuickSwitcherPins
  * @runAt idle
  */
 
-const { Webpack, Patcher, Data, React } = BdApi;
+const { Webpack, Patcher, Data, React, UI } = BdApi;
 const Filters = Webpack.Filters;
 const rce = React.createElement;
 
@@ -18,40 +18,68 @@ const QuickSwitcher = Webpack.getMangled(
     { quickSwitcherResultsChanged: Filters.byStrings('.GAME_PROFILE:return[]') },
     { mapDeclarations: true }
 );
+const RelationshipStore = Webpack.Stores.RelationshipStore;
 
 const regexPattern = /^\/(.+)\/([dgimsuvy]*)$/;
 
+const settings = [
+    {
+        id: 'hideWhichUsers',
+        name: 'Hide Users',
+        note: 'Hides these users/bots from the quick switcher.',
+        type: 'dropdown',
+        options: [
+            { id: 'hideNeither', label: 'Neither', value: 0 },
+            { id: 'hideBlockedUsers', label: 'Blocked Users', value: 1 },
+            { id: 'hideIgnoredUsers', label: 'Ignored Users', value: 2 },
+            { id: 'hideBoth', label: 'Both', value: 3 }
+        ],
+        value: 0,
+        style: 'default'
+    }
+];
+const hideWhichUsers = () => settings.find(s => s.id === 'hideWhichUsers')?.value;
+const shouldHideBlockedUsers = () => hideWhichUsers() & 1 == 1;
+const shouldHideIgnoredUsers = () => hideWhichUsers() & 2 == 2;
+
 module.exports = class QuickSwitcherPins {
     start() {
+        Object.assign(settings, Data.load('QuickSwitcherPins', 'settings'));
+
         Patcher.before('QuickSwitcherPins', QuickSwitcher, "quickSwitcherResultsChanged", (_, args) => {
-            const [results, query] = args;
+            let [results, query] = args;
             if (!results || !Array.isArray(results) || !query) return;
 
             const pinned = Data.load('QuickSwitcherPins', 'pinned');
-            if (!pinned || !Array.isArray(pinned)) return;
+            if (pinned && Array.isArray(pinned)) {
+                for (let i = pinned.length - 1; i >= 0; i--) {
+                    const pin = pinned[i];
+                    if (pin.queryRegex) {
+                        const match = pin.queryRegex.match(regexPattern);
+                        let regex;
 
-            for (let i = pinned.length - 1; i >= 0; i--) {
-                const pin = pinned[i];
-                if (pin.queryRegex) {
-                    const match = pin.queryRegex.match(regexPattern);
-                    let regex;
+                        if (match) {
+                            const [, pattern, flags] = match;
+                            regex = new RegExp(pattern, flags);
+                        } else {
+                            regex = new RegExp(pin.queryRegex);
+                        }
 
-                    if (match) {
-                        const [, pattern, flags] = match;
-                        regex = new RegExp(pattern, flags);
-                    } else {
-                        regex = new RegExp(pin.queryRegex);
+                        if (!regex.test(query)) {
+                            continue;
+                        }
                     }
-
-                    if (!regex.test(query)) {
-                        continue;
+                    const existingIndex = results.findIndex(r => r.record.id === pin.id);
+                    if (existingIndex !== -1) {
+                        results.unshift(results.splice(existingIndex, 1)[0]);
                     }
-                }
-                const existingIndex = results.findIndex(r => r.record.id === pin.id);
-                if (existingIndex !== -1) {
-                    results.unshift(results.splice(existingIndex, 1)[0]);
                 }
             }
+            const hide = [
+                ...(shouldHideBlockedUsers() ? RelationshipStore.getBlockedIDs() : []),
+                ...(shouldHideIgnoredUsers() ? RelationshipStore.getIgnoredIDs() : [])
+            ];
+            results = results.filter(r => !hide.includes(r.record.id));
         });
     }
     stop() {
@@ -120,6 +148,12 @@ input.bd-text-input {
 `;
 
 function SettingsPanel() {
+    const bdSettings = UI.buildSettingsPanel({
+        settings, onChange: (_, id, value) => {
+            settings.find(s => s.id == id).value = value;
+            Data.save('SuperReactionTweaks', 'settings', settings);
+        }
+    });
     const generateKey = () => Math.random().toString(36).slice(2);
 
     const [pins, setPins] = React.useState(() => {
@@ -189,6 +223,7 @@ function SettingsPanel() {
 
     return rce('div', { className: 'qsp-panel', onDragOver: handleDragOver, onDrop: handleDrop },
         rce('style', null, settingsStyles),
+        bdSettings,
         pins.map((pin, index) => {
             const isEmpty = index === pins.length - 1 && !pin.id && !pin.queryRegex;
             return rce('div', {
