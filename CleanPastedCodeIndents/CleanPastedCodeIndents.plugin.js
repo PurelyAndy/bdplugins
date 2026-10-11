@@ -12,6 +12,8 @@
 const { Webpack, Patcher, Utils, React, Components } = BdApi;
 const Filters = Webpack.Filters;
 
+const fs = require('fs');
+
 const [HistoryEditorModule, HistoryEditorKey] = Webpack.getWithKey(
     t => t.withSingleEntry,
     { target: Webpack.getBySource('withSingleEntry:(') }
@@ -27,6 +29,7 @@ const [ divButton ] = Object.values(Webpack.getBySource('defaultProps={tag:"div"
 
 module.exports = class CleanPastedCodeIndents {
     start() {
+        loadModel();
         Patcher.instead('CleanPastedCodeIndents', codeBlock, 'react', (_, args, original) => {
             return React.createElement(Components.ErrorBoundary,
                 { name: "CleanPastedCodeIndents", id: "CodeBlockWrapper" },
@@ -188,10 +191,12 @@ function calculateIndentInfo(lines) {
         }
     }
 
-    const heuristicAddIndentLevel = minIndent >= nextLineIndent && [..."{[(:"].some(c => lines[0].trim().endsWith(c));
-    const indentSize = heuristicAddIndentLevel ? findIndentSize(indents) : 0;
+    const tabSize = findIndentSize(indents);
+    const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))].filter(line => line.trim() !== "");
+    const heuristicAddIndentLevel = minIndent >= nextLineIndent && model.predict(buildModelEntries(trimmedLines, tabSize));
+    const indentSize = heuristicAddIndentLevel ? tabSize : 0;
 
-    return { minIndent, indentSize };
+    return { minIndent, indentSize: indentSize };
 }
 
 var findInReactTree = (root, filter) => Utils.findInTree(root, filter, { walkable: ['props', 'children'] });
@@ -321,3 +326,339 @@ function getFragmentText(editor) {
     }
     return text.substring(0, text.length - 1); // remove the last newline
 } */
+
+
+//const classifierWeights = fs.readFileSync(__dirname + '/model_weights.json', 'utf8');
+//const compactWeights = fs.readFileSync(__dirname + '/model_weights.compact', 'binary');
+
+async function loadModel() {
+    const response = await fetch('https://raw.githubusercontent.com/PurelyAndy/bdplugins/main/CleanPastedCodeIndents/model_weights.compact');
+    if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+    const compactWeights = await response.arrayBuffer();
+    const classifierWeights = unpackWeights(compactWeights);
+    model = new TinyIndentTransformer(classifierWeights, 96, 5);
+}
+
+const TAB_WIDTH = 4;
+const MAX_MODEL_LINES = 5;
+
+function buildModelEntries(lines, tabSize) {
+    const entries = lines.filter(l => l.trim() !== "").slice(0, MAX_MODEL_LINES);
+    const widths = entries.map(indentWidth);
+    const minLater = entries.length > 1 ? Math.min(...widths.slice(1)) : 0;
+
+    return entries.map((line, i) => ({
+        text: line.trimStart(),
+        relIndent: i === 0 ? 0 : Math.max(0, widths[i] - minLater) / tabSize,
+    }));
+}
+
+function unpackWeights(arrayBuffer) {
+    const buffer = new Uint8Array(arrayBuffer);
+    const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const decoder = new TextDecoder('utf-8');
+
+    const weights = {};
+
+    let offset = 0;
+
+    while (offset < buffer.length) {
+        const nullTermIndex = buffer.indexOf(0, offset);
+        if (nullTermIndex === -1) {
+            break;
+        }
+
+        const key = decoder.decode(buffer.subarray(offset, nullTermIndex));
+        offset = nullTermIndex + 1;
+
+        const length = view.getUint32(offset, true);
+        offset += 4;
+
+        const value = new Float32Array(length);
+        for (let i = 0; i < length; i++) {
+            value[i] = view.getFloat32(offset, true);
+            offset += 4;
+        }
+
+        weights[key] = value;
+    }
+
+    return weights;
+}
+
+function indentWidth(line) {
+    let width = 0;
+
+    for (const ch of line) {
+        if (ch === ' ') {
+            width++;
+        } else if (ch === '\t') {
+            width += TAB_WIDTH;
+        } else {
+            break;
+        }
+    }
+
+    return width;
+}
+
+class TinyIndentTransformer {
+    constructor(weights, maxBytesPerLine, numLines) {
+        this.encoder = new TextEncoder();
+        this.maxBytesPerLine = maxBytesPerLine || 96;
+        this.numLines = numLines || 5;
+        this.dModel = 32;
+        this.w = weights;
+    }
+
+    _lineBytes(rawText) {
+        const bytes = this.encoder.encode(rawText.replace(/\t/g, "    ").trimStart());
+        const max = this.maxBytesPerLine;
+        
+        if (bytes.length <= max) {
+            return bytes;
+        }
+
+        const budget = max - 1;
+        const headBytes = Math.floor(budget / 3);
+        const tailBytes = budget - headBytes;
+
+        let headEnd = headBytes;
+        while (headEnd > 0 && (bytes[headEnd] & 0xC0) === 0x80) {
+            headEnd--;
+        }
+        
+        let tailStart = bytes.length - tailBytes;
+        while (tailStart < bytes.length && (bytes[tailStart] & 0xC0) === 0x80) {
+            tailStart++;
+        }
+
+        const out = new Uint8Array(headEnd + 1 + (bytes.length - tailStart));
+        out.set(bytes.subarray(0, headEnd), 0);
+        out[headEnd] = 0x01;
+        out.set(bytes.subarray(tailStart), headEnd + 1);
+
+        return out;
+    }
+
+    predict(entries) {
+        const startTime = performance.now();
+
+        const seqLen = this.numLines * this.maxBytesPerLine;
+        const dModel = this.dModel;
+        const tokens = new Int32Array(seqLen);
+        const indents = new Float32Array(seqLen);
+
+        for (let i = 0; i < this.numLines; i++) {
+            if (i < entries.length) {
+                const bytes = this._lineBytes(entries[i].text);
+                const offset = i * this.maxBytesPerLine + (this.maxBytesPerLine - bytes.length);
+                
+                for (let j = 0; j < bytes.length; j++) {
+                    tokens[offset + j] = bytes[j];
+                }
+                
+                for (let j = 0; j < this.maxBytesPerLine; j++) {
+                    indents[i * this.maxBytesPerLine + j] = entries[i].relIndent;
+                }
+            }
+        }
+
+        const X = new Float32Array(seqLen * dModel);
+        const wByte = this.w['byteEmbedding.weight'];
+        const wPos = this.w['posEmbedding.weight'];
+        const wIndent = this.w['indentLinear.weight'];
+        const bIndent = this.w['indentLinear.bias'];
+
+        for (let i = 0; i < seqLen; i++) {
+            const token = tokens[i], ind = indents[i];
+            for (let d = 0; d < dModel; d++) {
+                X[i * dModel + d] = wByte[token * dModel + d] + wPos[i * dModel + d] + (wIndent[d] * ind + bIndent[d]);
+            }
+        }
+
+        const Q = new Float32Array(seqLen * dModel), K = new Float32Array(seqLen * dModel);
+        const V = new Float32Array(seqLen * dModel), AttnOut = new Float32Array(seqLen * dModel);
+        const wIn = this.w['transformerEncoder.layers.0.self_attn.in_proj_weight'];
+        const bIn = this.w['transformerEncoder.layers.0.self_attn.in_proj_bias'];
+
+        for (let i = 0; i < seqLen; i++) {
+            for (let out_d = 0; out_d < dModel * 3; out_d++) {
+                let sum = bIn[out_d];
+                for (let in_d = 0; in_d < dModel; in_d++) {
+                    sum += X[i * dModel + in_d] * wIn[out_d * dModel + in_d];
+                }
+                
+                if (out_d < dModel) {
+                    Q[i * dModel + out_d] = sum;
+                } else if (out_d < dModel * 2) {
+                    K[i * dModel + (out_d - dModel)] = sum;
+                } else {
+                    V[i * dModel + (out_d - dModel * 2)] = sum;
+                }
+            }
+        }
+
+        const nHeads = 2, headDim = 16, scale = 1.0 / Math.sqrt(headDim);
+        for (let h = 0; h < nHeads; h++) {
+            for (let i = 0; i < seqLen; i++) {
+                const scores = new Float32Array(seqLen);
+                let maxScore = -Infinity;
+
+                for (let j = 0; j < seqLen; j++) {
+                    if (tokens[j] === 0) {
+                        scores[j] = -Infinity;
+                        continue;
+                    }
+
+                    let dot = 0;
+
+                    for (let d = 0; d < headDim; d++) {
+                        dot += Q[i * dModel + h * headDim + d] * K[j * dModel + h * headDim + d];
+                    }
+                    
+                    scores[j] = dot * scale;
+                    
+                    if (scores[j] > maxScore) {
+                        maxScore = scores[j];
+                    }
+                }
+
+                let sumExp = 0;
+                for (let j = 0; j < seqLen; j++) {
+                    if (tokens[j] !== 0) {
+                        scores[j] = Math.exp(scores[j] - maxScore);
+                        sumExp += scores[j];
+                    } else scores[j] = 0;
+                }
+
+                for (let j = 0; j < seqLen; j++) scores[j] /= sumExp;
+
+                for (let d = 0; d < headDim; d++) {
+                    let val = 0;
+                    for (let j = 0; j < seqLen; j++) if (scores[j] > 0) val += scores[j] * V[j * dModel + h * headDim + d];
+                    AttnOut[i * dModel + h * headDim + d] = val;
+                }
+            }
+        }
+
+        const wOut = this.w['transformerEncoder.layers.0.self_attn.out_proj.weight'];
+        const bOut = this.w['transformerEncoder.layers.0.self_attn.out_proj.bias'];
+
+        for (let i = 0; i < seqLen; i++) {
+            for (let out_d = 0; out_d < dModel; out_d++) {
+                let sum = bOut[out_d];
+                for (let in_d = 0; in_d < dModel; in_d++) sum += AttnOut[i * dModel + in_d] * wOut[out_d * dModel + in_d];
+                X[i * dModel + out_d] += sum;
+            }
+        }
+
+        const layerNorm = (arr, startIdx, len, wNorm, bNorm) => {
+            let sum = 0, varSum = 0;
+            for (let i = 0; i < len; i++) sum += arr[startIdx + i];
+
+            const mean = sum / len;
+            for (let i = 0; i < len; i++) varSum += (arr[startIdx + i] - mean) ** 2;
+
+            const std = Math.sqrt((varSum / len) + 1e-5);
+            for (let i = 0; i < len; i++) arr[startIdx + i] = ((arr[startIdx + i] - mean) / std) * wNorm[i] + bNorm[i];
+        };
+
+        const norm1W = this.w['transformerEncoder.layers.0.norm1.weight'], norm1B = this.w['transformerEncoder.layers.0.norm1.bias'];
+        
+        for (let i = 0; i < seqLen; i++) {
+            layerNorm(X, i * dModel, dModel, norm1W, norm1B);
+        }
+
+        const wLin1 = this.w['transformerEncoder.layers.0.linear1.weight'], bLin1 = this.w['transformerEncoder.layers.0.linear1.bias'];
+        const wLin2 = this.w['transformerEncoder.layers.0.linear2.weight'], bLin2 = this.w['transformerEncoder.layers.0.linear2.bias'];
+        const hidden = new Float32Array(128);
+
+        for (let i = 0; i < seqLen; i++) {
+            for (let out_d = 0; out_d < 128; out_d++) {
+                let sum = bLin1[out_d];
+                for (let in_d = 0; in_d < dModel; in_d++) sum += X[i * dModel + in_d] * wLin1[out_d * dModel + in_d];
+                hidden[out_d] = sum > 0 ? sum : 0; // ReLU
+            }
+
+            for (let out_d = 0; out_d < dModel; out_d++) {
+                let sum = bLin2[out_d];
+                for (let in_d = 0; in_d < 128; in_d++) sum += hidden[in_d] * wLin2[out_d * 128 + in_d];
+                X[i * dModel + out_d] += sum;
+            }
+        }
+
+        const norm2W = this.w['transformerEncoder.layers.0.norm2.weight']
+        const norm2B = this.w['transformerEncoder.layers.0.norm2.bias'];
+        for (let i = 0; i < seqLen; i++) {
+            layerNorm(X, i * dModel, dModel, norm2W, norm2B);
+        }
+
+        const maskedMean = new Float32Array(dModel);
+        let validTokens = 0;
+
+        for (let i = 0; i < seqLen; i++) {
+            if (tokens[i] !== 0) {
+                validTokens++;
+                for (let d = 0; d < dModel; d++) maskedMean[d] += X[i * dModel + d];
+            }
+        }
+
+        const divisor = (validTokens / seqLen) + 1e-6;
+
+        for (let d = 0; d < dModel; d++) maskedMean[d] = (maskedMean[d] / seqLen) / divisor;
+
+        const lineEnds = new Float32Array(this.numLines * dModel);
+
+        for (let L = 0; L < this.numLines; L++) {
+            const lastPos = L * this.maxBytesPerLine + (this.maxBytesPerLine - 1);
+
+            if (tokens[lastPos] !== 0) {
+                for (let d = 0; d < dModel; d++) lineEnds[L * dModel + d] = X[lastPos * dModel + d];
+            }
+        }
+
+        const lineStarts = new Float32Array(this.numLines * dModel);
+
+        for (let L = 0; L < this.numLines; L++) {
+            let firstOffset = -1;
+
+            for (let j = 0; j < this.maxBytesPerLine; j++) {
+                if (tokens[L * this.maxBytesPerLine + j] !== 0) { firstOffset = j; break; }
+            }
+
+            if (firstOffset !== -1) {
+                const firstPos = L * this.maxBytesPerLine + firstOffset;
+                for (let d = 0; d < dModel; d++) lineStarts[L * dModel + d] = X[firstPos * dModel + d];
+            }
+        }
+
+        const featureSize = dModel * (1 + 2 * this.numLines);
+        const features = new Float32Array(featureSize);
+
+        features.set(maskedMean, 0);
+        features.set(lineEnds, dModel);
+        features.set(lineStarts, dModel + this.numLines * dModel);
+
+        const wC1 = this.w['classifierHead.0.weight'], bC1 = this.w['classifierHead.0.bias'];
+        const hiddenC = new Float32Array(32);
+
+        for (let out_d = 0; out_d < 32; out_d++) {
+            let sum = bC1[out_d];
+            for (let in_d = 0; in_d < featureSize; in_d++) sum += features[in_d] * wC1[out_d * featureSize + in_d];
+            hiddenC[out_d] = sum > 0 ? sum : 0.01 * sum;
+        }
+
+        const wC2 = this.w['classifierHead.2.weight'], bC2 = this.w['classifierHead.2.bias'];
+        let outSum = bC2[0];
+
+        for (let in_d = 0; in_d < 32; in_d++) {
+            outSum += hiddenC[in_d] * wC2[in_d];
+        }
+
+        // console.log("Took " + (performance.now() - startTime).toFixed(2) + "ms to predict confidence " + outSum.toFixed(2) + " for " + entries.length + " lines.");
+
+        return outSum > 0;
+    }
+}
+var model;
