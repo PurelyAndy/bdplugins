@@ -347,7 +347,7 @@ function getFragmentText(editor) {
 //const compactWeights = fs.readFileSync(__dirname + '/model_weights.compact', 'binary');
 
 async function loadModel() {
-    const response = await fetch('https://raw.githubusercontent.com/PurelyAndy/bdplugins/main/CleanPastedCodeIndents/model_weights.compact');
+    const response = await fetch(`https://raw.githubusercontent.com/PurelyAndy/bdplugins/main/CleanPastedCodeIndents/model_weights.compact?t=${Date.now()}`);
     if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
     const compactWeights = await response.arrayBuffer();
     const weightData = await inflateModel(compactWeights);
@@ -373,6 +373,8 @@ async function inflateModel(arrayBuffer) {
     const ds = new DecompressionStream('deflate-raw');
     const stream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
     const arrayBufferDecompressed = await new Response(stream).arrayBuffer();
+
+    return arrayBufferDecompressed;
 }
 
 async function unpackWeights(arrayBuffer) {
@@ -382,19 +384,24 @@ async function unpackWeights(arrayBuffer) {
 
     const weights = {};
 
-    let offset = 4;
+    let offset = 0;
 
     while (offset < buffer.length) {
         const nullTermIndex = buffer.indexOf(0, offset);
         if (nullTermIndex === -1) {
             break;
         }
+        console.log(`Reading tensor key at offset ${offset}, null-terminated at ${nullTermIndex}`);
 
         const key = decoder.decode(buffer.subarray(offset, nullTermIndex));
         offset = nullTermIndex + 1;
 
         const length = view.getUint32(offset, true);
+        console.log(`Length of tensor ${key} is at offset ${offset}: ${length}`);
+
         offset += 4;
+
+        console.log(`Values of tensor ${key} are at offset ${offset}`);
 
         const value = new Float32Array(length);
         for (let i = 0; i < length; i++) {
