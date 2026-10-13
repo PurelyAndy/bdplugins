@@ -391,17 +391,17 @@ async function unpackWeights(arrayBuffer) {
         if (nullTermIndex === -1) {
             break;
         }
-        console.log(`Reading tensor key at offset ${offset}, null-terminated at ${nullTermIndex}`);
+        //console.log(`Reading tensor key at offset ${offset}, null-terminated at ${nullTermIndex}`);
 
         const key = decoder.decode(buffer.subarray(offset, nullTermIndex));
         offset = nullTermIndex + 1;
 
         const length = view.getUint32(offset, true);
-        console.log(`Length of tensor ${key} is at offset ${offset}: ${length}`);
+        //console.log(`Length of tensor ${key} is at offset ${offset}: ${length}`);
 
         offset += 4;
 
-        console.log(`Values of tensor ${key} are at offset ${offset}`);
+        //console.log(`Values of tensor ${key} are at offset ${offset}`);
 
         const value = new Float32Array(length);
         for (let i = 0; i < length; i++) {
