@@ -9,10 +9,8 @@
  * @runAt idle
  */
 
-const { Webpack, Patcher, Utils, React, Components } = BdApi;
+const { Webpack, Patcher, Utils, React, Components, UI, Data } = BdApi;
 const Filters = Webpack.Filters;
-
-const fs = require('fs');
 
 const [HistoryEditorModule, HistoryEditorKey] = Webpack.getWithKey(
     t => t.withSingleEntry,
@@ -27,8 +25,19 @@ const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getMangled(
 const { codeBlock } = Webpack.getByKeys("defaultRules", "parseTopic").defaultRules;
 const [ divButton ] = Object.values(Webpack.getBySource('defaultProps={tag:"div",role:"button"'));
 
+const settings = [
+    {
+        id: 'cleanCodeBlocksByDefault',
+        name: 'Clean Code Blocks by Default',
+        note: 'If enabled, code blocks in the chat will be cleaned without you having to click the button.',
+        type: 'switch',
+        value: true
+    },
+];
+
 module.exports = class CleanPastedCodeIndents {
     start() {
+        Object.assign(settings, Data.load('CleanPastedCodeIndents', 'settings'));
         loadModel();
         Patcher.instead('CleanPastedCodeIndents', codeBlock, 'react', (_, args, original) => {
             return React.createElement(Components.ErrorBoundary,
@@ -152,6 +161,12 @@ module.exports = class CleanPastedCodeIndents {
     }
     stop() {
         Patcher.unpatchAll('CleanPastedCodeIndents');
+    }
+    getSettingsPanel() {
+        return UI.buildSettingsPanel({ settings, onChange: (_, id, value) => {
+            settings.find(s => s.id == id).value = value;
+            Data.save('CleanPastedCodeIndents', 'settings', settings);
+        }});
     }
 };
 
@@ -327,7 +342,7 @@ function getFragmentText(editor) {
     return text.substring(0, text.length - 1); // remove the last newline
 } */
 
-
+//const fs = require('fs');
 //const classifierWeights = fs.readFileSync(__dirname + '/model_weights.json', 'utf8');
 //const compactWeights = fs.readFileSync(__dirname + '/model_weights.compact', 'binary');
 
@@ -335,7 +350,8 @@ async function loadModel() {
     const response = await fetch('https://raw.githubusercontent.com/PurelyAndy/bdplugins/main/CleanPastedCodeIndents/model_weights.compact');
     if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
     const compactWeights = await response.arrayBuffer();
-    const classifierWeights = unpackWeights(compactWeights);
+    const weightData = await inflateModel(compactWeights);
+    const classifierWeights = await unpackWeights(weightData);
     model = new TinyIndentTransformer(classifierWeights, 96, 5);
 }
 
@@ -353,14 +369,20 @@ function buildModelEntries(lines, tabSize) {
     }));
 }
 
-function unpackWeights(arrayBuffer) {
+async function inflateModel(arrayBuffer) {
+    const ds = new DecompressionStream('deflate-raw');
+    const stream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
+    const arrayBufferDecompressed = await new Response(stream).arrayBuffer();
+}
+
+async function unpackWeights(arrayBuffer) {
     const buffer = new Uint8Array(arrayBuffer);
     const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     const decoder = new TextDecoder('utf-8');
 
     const weights = {};
 
-    let offset = 0;
+    let offset = 4;
 
     while (offset < buffer.length) {
         const nullTermIndex = buffer.indexOf(0, offset);
@@ -452,8 +474,9 @@ class TinyIndentTransformer {
         for (let i = 0; i < this.numLines; i++) {
             if (i < entries.length) {
                 const bytes = this._lineBytes(entries[i].text);
-                const offset = i * this.maxBytesPerLine + (this.maxBytesPerLine - bytes.length);
-                
+                const lineStart = i * this.maxBytesPerLine;
+                const offset = lineStart + (this.maxBytesPerLine - bytes.length);
+
                 for (let j = 0; j < bytes.length; j++) {
                     tokens[offset + j] = bytes[j];
                 }
@@ -500,9 +523,9 @@ class TinyIndentTransformer {
         }
 
         const nHeads = 2, headDim = 16, scale = 1.0 / Math.sqrt(headDim);
+        const scores = new Float32Array(seqLen);
         for (let h = 0; h < nHeads; h++) {
             for (let i = 0; i < seqLen; i++) {
-                const scores = new Float32Array(seqLen);
                 let maxScore = -Infinity;
 
                 for (let j = 0; j < seqLen; j++) {
@@ -606,7 +629,9 @@ class TinyIndentTransformer {
 
         const divisor = (validTokens / seqLen) + 1e-6;
 
-        for (let d = 0; d < dModel; d++) maskedMean[d] = (maskedMean[d] / seqLen) / divisor;
+        for (let d = 0; d < dModel; d++) {
+            maskedMean[d] = (maskedMean[d] / seqLen) / divisor;
+        }
 
         const lineEnds = new Float32Array(this.numLines * dModel);
 
@@ -656,7 +681,7 @@ class TinyIndentTransformer {
             outSum += hiddenC[in_d] * wC2[in_d];
         }
 
-        // console.log("Took " + (performance.now() - startTime).toFixed(2) + "ms to predict confidence " + outSum.toFixed(2) + " for " + entries.length + " lines.");
+        console.log("Took " + (performance.now() - startTime).toFixed(2) + "ms to predict confidence " + outSum.toFixed(2) + " for " + entries.length + " lines.");
 
         return outSum > 0;
     }
