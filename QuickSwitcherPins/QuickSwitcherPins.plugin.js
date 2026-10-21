@@ -2,7 +2,7 @@
  * @name QuickSwitcherPins
  * @author PurelyAndy
  * @description Lets you specify search results to always show up at the top of the quick switcher
- * @version 1.0.0
+ * @version 1.0.1
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/QuickSwitcherPins
@@ -22,7 +22,7 @@ const RelationshipStore = Webpack.Stores.RelationshipStore;
 
 const regexPattern = /^\/(.+)\/([dgimsuvy]*)$/;
 
-const settings = [
+/* const settings = [
     {
         id: 'hideWhichUsers',
         name: 'Hide Users',
@@ -37,14 +37,14 @@ const settings = [
         value: 0,
         style: 'default'
     }
-];
-const hideWhichUsers = () => settings.find(s => s.id === 'hideWhichUsers')?.value;
+]; */
+/* const hideWhichUsers = () => settings.find(s => s.id === 'hideWhichUsers')?.value;
 const shouldHideBlockedUsers = () => hideWhichUsers() & 1 == 1;
-const shouldHideIgnoredUsers = () => hideWhichUsers() & 2 == 2;
+const shouldHideIgnoredUsers = () => hideWhichUsers() & 2 == 2; */
 
 module.exports = class QuickSwitcherPins {
     start() {
-        Object.assign(settings, Data.load('QuickSwitcherPins', 'settings'));
+        /* Object.assign(settings, Data.load('QuickSwitcherPins', 'settings')); */
 
         Patcher.before('QuickSwitcherPins', QuickSwitcher, "quickSwitcherResultsChanged", (_, args) => {
             let [results, query] = args;
@@ -75,11 +75,11 @@ module.exports = class QuickSwitcherPins {
                     }
                 }
             }
-            const hide = [
+            /* const hide = [
                 ...(shouldHideBlockedUsers() ? RelationshipStore.getBlockedIDs() : []),
                 ...(shouldHideIgnoredUsers() ? RelationshipStore.getIgnoredIDs() : [])
             ];
-            results = results.filter(r => !hide.includes(r.record.id));
+            results = results.filter(r => !hide.includes(r.record.id)); */
         });
     }
     stop() {
@@ -148,12 +148,13 @@ input.bd-text-input {
 `;
 
 function SettingsPanel() {
-    const bdSettings = UI.buildSettingsPanel({
+    /* const bdSettings = UI.buildSettingsPanel({
         settings, onChange: (_, id, value) => {
             settings.find(s => s.id == id).value = value;
             Data.save('SuperReactionTweaks', 'settings', settings);
         }
-    });
+    }); */
+
     const generateKey = () => Math.random().toString(36).slice(2);
 
     const [pins, setPins] = React.useState(() => {
@@ -223,7 +224,7 @@ function SettingsPanel() {
 
     return rce('div', { className: 'qsp-panel', onDragOver: handleDragOver, onDrop: handleDrop },
         rce('style', null, settingsStyles),
-        bdSettings,
+        /* bdSettings, */
         pins.map((pin, index) => {
             const isEmpty = index === pins.length - 1 && !pin.id && !pin.queryRegex;
             return rce('div', {
