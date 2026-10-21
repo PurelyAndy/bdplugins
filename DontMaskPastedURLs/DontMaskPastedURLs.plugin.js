@@ -1,24 +1,46 @@
 /**
  * @name DontMaskPastedURLs
  * @author PurelyAndy
- * @description Makes it so when you paste a link with some text selected, it just replaces the text rather than creating a [masked link](https://example.com)
- * @version 1.0.0
+ * @description Makes it so that when you paste a link with some text selected, it just replaces the text rather than creating a [masked link](https://example.com)
+ * @version 1.1.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/DontMaskPastedURLs
  * @runAt idle
  */
 
-const { Webpack, Patcher, Data, React } = BdApi;
+const { Webpack, Patcher } = BdApi;
 const Filters = Webpack.Filters;
-const [SomeKindOfMarkdownModule, utilObjectKey] = Webpack.getWithKey(
-    t => t.withoutNormalizing,
-    { target: Webpack.getModule(Filters.bySource('attributes:["textMention"]')) }
+
+const DiscordEditor = Webpack.getModule(
+    Filters.combine(
+        Filters.byKeys("withoutNormalizing"),
+        Filters.bySource('attributes:["textMention"]')),
+    { searchExports: true }
 );
+const SlateRange = Webpack.getModule(
+    Filters.combine(
+        Filters.byKeys("isRange"),
+        Filters.bySource('Could not completely normalize the editor')),
+    { searchExports: true }
+);
+
+const settings = [
+    {
+        id: 'maskUnlessFullSelection',
+        name: 'Only prevent masking if the entire text is selected',
+        note: 'If enabled, pasted URLs will still be masked if only part of the text is selected. If disabled, pasted URLs will never be masked.',
+        type: 'switch',
+        value: false
+    },
+];
+const maskUnlessFullSelection = () => settings.find(s => s.id === 'maskUnlessFullSelection')?.value;
 
 module.exports = class DontMaskPastedURLs {
     start() {
-        Patcher.before('DontMaskPastedURLs', SomeKindOfMarkdownModule[utilObjectKey], 'withoutNormalizing', (self, args) => {
+        Object.assign(settings, Data.load('DontMaskPastedURLs', 'settings'));
+
+        Patcher.before('DontMaskPastedURLs', DiscordEditor, 'withoutNormalizing', (_, args) => {
             const editor = args[0];
             const callback = args[1];
 
@@ -30,8 +52,12 @@ module.exports = class DontMaskPastedURLs {
 
             args[1] = () => {
                 const originalInsertText = editor.insertText;
+                const originalSelection = editor.selection;
+                const isFullSelection = SlateRange.equals(editor.selection, DiscordEditor.range(editor, []));
 
-                let originalSelection = editor.selection;
+                if (maskUnlessFullSelection() && !isFullSelection) {
+                    return callback();
+                }
 
                 editor.insertText = text => {
                     if (text === "[") {
@@ -50,7 +76,7 @@ module.exports = class DontMaskPastedURLs {
                 };
 
                 try {
-                    return callback.apply(this, arguments);
+                    return callback();
                 } finally {
                     editor.insertText = originalInsertText;
                 }
@@ -59,5 +85,11 @@ module.exports = class DontMaskPastedURLs {
     }
     stop() {
         Patcher.unpatchAll('DontMaskPastedURLs');
+    }
+    getSettingsPanel() {
+        return UI.buildSettingsPanel({ settings, onChange: (_, id, value) => {
+            settings.find(s => s.id == id).value = value;
+            Data.save('DontMaskPastedURLs', 'settings', settings);
+        }});
     }
 };
