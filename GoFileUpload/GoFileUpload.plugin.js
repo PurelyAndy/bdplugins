@@ -9,7 +9,8 @@
  * @runAt idle
  */
 
-const { Webpack, Patcher, Data, React } = BdApi;
+const Bd = new BdApi('GoFileUpload');
+const { Webpack, Patcher, Data, React } = Bd;
 const Filters = Webpack.Filters;
 const rce = React.createElement;
 
@@ -19,9 +20,9 @@ const [CheckFilesModule, openModalIfFileExceedsSizeKey] = Webpack.getWithKey(
     Filters.byStrings('Unexpected mismatch between files and file metadata'),
     { target: Webpack.getBySource('Unexpected mismatch between files and file metadata') }
 );
-const { getGuildMaxFileSize } = Webpack.getMangled(
+const { getGuildMaxFileSize } = Webpack.getBySource(
     'MAX_FILE_SIZE_100_MB,',
-    { getGuildMaxFileSize: Filters.byStrings('.getGuild(') }
+    { map: { getGuildMaxFileSize: Filters.byStrings('.getGuild(') } }
 );
 const MessageStoreDispatcher = Webpack.Stores.MessageStore._dispatcher;
 const MessageQueue = Webpack.getByKeys('handleSend');
@@ -70,17 +71,26 @@ function interceptDispatch(e) {
     return false;
 }
 
+function updateSettings() {
+    const version = Data.load('settingsVersion') ?? 0;
+    if (version < 1) {
+        if (Data.load('uploads') == undefined) {
+            Data.save('uploads', {});
+        }
+        if (Data.load('linkPosition') == undefined) {
+            Data.save('linkPosition', 'after');
+        }
+        Data.save('settingsVersion', 1);
+    }
+}
+
 module.exports = class GoFileUpload {
     start() {
-        MessageStoreDispatcher.addInterceptor(interceptDispatch);
-        if (Data.load('GoFileUpload', 'uploads') == undefined) {
-            Data.save('GoFileUpload', 'uploads', {});
-        }
-        if (Data.load('GoFileUpload', 'linkPosition') == undefined) {
-            Data.save('GoFileUpload', 'linkPosition', 'after');
-        }
+        updateSettings();
 
-        Patcher.before('GoFileUpload', CheckFilesModule, openModalIfFileExceedsSizeKey, (_, args, orig) => {
+        MessageStoreDispatcher.addInterceptor(interceptDispatch);
+
+        Patcher.before(CheckFilesModule, openModalIfFileExceedsSizeKey, (_, args, orig) => {
             args[0] = Array.from(args[0]);
 
             const oldGetCurrentUser = UserStore.getCurrentUser;
@@ -109,7 +119,7 @@ module.exports = class GoFileUpload {
             }
         });
 
-        Patcher.instead('GoFileUpload', CloudUploader.prototype, 'upload', (self, args, orig) => {
+        Patcher.instead(CloudUploader.prototype, 'upload', (self, args, orig) => {
             const dummyFile = self.item.file;
             const originalFile = dummyToBigFile.get(dummyFile);
 
@@ -155,7 +165,7 @@ module.exports = class GoFileUpload {
             });
         });
 
-        Patcher.instead('GoFileUpload', CloudUploader.prototype, '_cancel', (self, args, orig) => {
+        Patcher.instead(CloudUploader.prototype, '_cancel', (self, args, orig) => {
             if (!inFlightUploadIds.has(self.id)) {
                 return orig.apply(self, args);
             }
@@ -166,7 +176,7 @@ module.exports = class GoFileUpload {
             return orig.apply(self, args);
         });
 
-        Patcher.before('GoFileUpload', MessageActions, '_sendMessage', (_, args, orig) => {
+        Patcher.before(MessageActions, '_sendMessage', (_, args, orig) => {
             const extraInfo = args[2];
             const uploads = extraInfo?.attachmentsToUpload;
 
@@ -182,7 +192,7 @@ module.exports = class GoFileUpload {
             }
         });
 
-        Patcher.before('GoFileUpload', MessageQueue, 'enqueue', (self, args, orig) => {
+        Patcher.before(MessageQueue, 'enqueue', (self, args, orig) => {
             const envelope = args[0];
             const nonce = envelope?.message?.nonce;
             if (nonce == null) return;
@@ -227,7 +237,7 @@ module.exports = class GoFileUpload {
                 }
             }
 
-            const position = Data.load('GoFileUpload', 'linkPosition') || 'after';
+            const position = Data.load('linkPosition') || 'after';
 
             let downloadLinks = merged.map(result => `\n[${result.name}](${result.downloadPage})`).join('').trim();
             if (position === 'after') {
@@ -275,7 +285,7 @@ module.exports = class GoFileUpload {
     }
 
     stop() {
-        Patcher.unpatchAll('GoFileUpload');
+        Patcher.unpatchAll();
         MessageStoreDispatcher._interceptors.splice(MessageStoreDispatcher._interceptors.indexOf(interceptDispatch), 1);
         dummyToBigFile.clear();
         bigFileToDummy.clear();
@@ -353,10 +363,10 @@ p {
 
 function SettingsPanel() {
     const [linkPosition, setLinkPosition] = React.useState(
-        Data.load('GoFileUpload', 'linkPosition') || 'after'
+        Data.load('linkPosition') || 'after'
     );
     const [uploads, setUploads] = React.useState(
-        () => Data.load('GoFileUpload', 'uploads') || {}
+        () => Data.load('uploads') || {}
     );
 
     return rce('div', { style: { padding: '10px', minHeight: '200px' } },
@@ -373,7 +383,7 @@ function SettingsPanel() {
             value: linkPosition,
             select: (value) => {
                 setLinkPosition(value);
-                Data.save('GoFileUpload', 'linkPosition', value);
+                Data.save('linkPosition', value);
             },
             serialize: (value) => value,
             isSelected: (value) => value === linkPosition
@@ -397,7 +407,7 @@ function SettingsPanel() {
                                     const next = { ...prev };
                                     delete next[folderId];
 
-                                    Data.save('GoFileUpload', 'uploads', next);
+                                    Data.save('uploads', next);
                                     return next;
                                 });
                             } catch (error) {
@@ -434,7 +444,7 @@ function SettingsPanel() {
                                                 }
                                             };
 
-                                            Data.save('GoFileUpload', 'uploads', next);
+                                            Data.save('uploads', next);
                                             return next;
                                         });
                                     } catch (error) {
@@ -534,9 +544,9 @@ async function createSharedFolder(depth = 0) {
         const folderResponse = await createFolder();
         const downloadPage = `https://gofile.io/d/${folderResponse.data.code}`;
 
-        const allUploads = Data.load('GoFileUpload', 'uploads') || {};
+        const allUploads = Data.load('uploads') || {};
         allUploads[folderResponse.data.id] = { name: folderResponse.data.name, downloadPage, files: [], associatedToken: goFileGuest.token };
-        Data.save('GoFileUpload', 'uploads', allUploads);
+        Data.save('uploads', allUploads);
 
         return { folderId: folderResponse.data.id, downloadPage, token: goFileGuest.token };
     } catch (error) {
@@ -589,7 +599,7 @@ async function performUpload(file, batchKey, onProgress, cloudUploadId) {
         return failure;
     }
 
-    const allUploads = Data.load('GoFileUpload', 'uploads') || {};
+    const allUploads = Data.load('uploads') || {};
     const uploadResults = [];
 
     const formatStringOpen = file.isSpoilered ? '||`' : '`';
@@ -617,7 +627,7 @@ async function performUpload(file, batchKey, onProgress, cloudUploadId) {
         }
     }
 
-    Data.save('GoFileUpload', 'uploads', allUploads);
+    Data.save('uploads', allUploads);
     return uploadResults;
 }
 
@@ -635,6 +645,9 @@ async function deleteEntry(id, token) {
     });
 
     if (!response.ok) {
+        if (response.status === 401 && (await response.json()).status === 'error-wrongToken') {
+            return; // pretty sure this means it's already been auto-deleted by GoFile
+        }
         throw new Error(`Failed to delete entry: ${response.status} ${response.statusText} ${await response.text()}`);
     }
 
