@@ -2,23 +2,28 @@
  * @name QuickSwitcherPins
  * @author PurelyAndy
  * @description Lets you specify search results to always show up at the top of the quick switcher
- * @version 1.0.1
+ * @version 1.1.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/QuickSwitcherPins
  * @runAt idle
  */
 
-const { Webpack, Patcher, Data, React, UI } = BdApi;
+const Bd = new BdApi('QuickSwitcherPins');
+const { Webpack, Patcher, Data, React, UI } = Bd;
 const Filters = Webpack.Filters;
 const rce = React.createElement;
 
-const QuickSwitcher = Webpack.getMangled(
-    '.GAME_PROFILE:return[]',
-    { quickSwitcherResultsChanged: Filters.byStrings('.GAME_PROFILE:return[]') },
-    { mapDeclarations: true }
+const QuickSwitcher = Webpack.getBySource(
+    '.GAME_PROFILE:return[]', {
+        map: {
+            quickSwitcherResultsChanged: Filters.byStrings('.GAME_PROFILE:return[]'),
+            resultTypes: Filters.byStrings('{return['),
+        },
+        mapDeclarations: true
+    }
 );
-const RelationshipStore = Webpack.Stores.RelationshipStore;
+/* const RelationshipStore = Webpack.Stores.RelationshipStore; */
 
 const regexPattern = /^\/(.+)\/([dgimsuvy]*)$/;
 
@@ -37,20 +42,32 @@ const regexPattern = /^\/(.+)\/([dgimsuvy]*)$/;
         value: 0,
         style: 'default'
     }
-]; */
-/* const hideWhichUsers = () => settings.find(s => s.id === 'hideWhichUsers')?.value;
-const shouldHideBlockedUsers = () => hideWhichUsers() & 1 == 1;
-const shouldHideIgnoredUsers = () => hideWhichUsers() & 2 == 2; */
+];
+for (const setting of settings) {
+    Object.defineProperty(settings, setting.id, {
+        get: () => setting.value = (Data.load(setting.id) ?? setting.value),
+        set: (value) => Data.save(setting.id, setting.value = value) 
+    });
+}
+const shouldHideBlockedUsers = () => settings.hideWhichUsers & 1 == 1;
+const shouldHideIgnoredUsers = () => settings.hideWhichUsers & 2 == 2; */
+function updateSettings() {
+    const version = Data.load('settingsVersion') ?? 0;
+    if (version < 1) {
+        Data.delete('settings');
+        Data.save('settingsVersion', 1);
+    }
+}
 
 module.exports = class QuickSwitcherPins {
     start() {
-        /* Object.assign(settings, Data.load('QuickSwitcherPins', 'settings')); */
+        updateSettings();
 
-        Patcher.before('QuickSwitcherPins', QuickSwitcher, "quickSwitcherResultsChanged", (_, args) => {
+        Patcher.before(QuickSwitcher, 'quickSwitcherResultsChanged', (_, args) => {
             let [results, query] = args;
             if (!results || !Array.isArray(results) || !query) return;
 
-            const pinned = Data.load('QuickSwitcherPins', 'pinned');
+            const pinned = Data.load('pinned');
             if (pinned && Array.isArray(pinned)) {
                 for (let i = pinned.length - 1; i >= 0; i--) {
                     const pin = pinned[i];
@@ -62,17 +79,23 @@ module.exports = class QuickSwitcherPins {
                             const [, pattern, flags] = match;
                             regex = new RegExp(pattern, flags);
                         } else {
-                            regex = new RegExp(pin.queryRegex);
+                            regex = new RegExp(pin.queryRegex, 'i');
                         }
 
                         if (!regex.test(query)) {
                             continue;
                         }
                     }
-                    const existingIndex = results.findIndex(r => r.record.id === pin.id);
-                    if (existingIndex !== -1) {
-                        results.unshift(results.splice(existingIndex, 1)[0]);
-                    }
+
+                    const matchesPin = r =>
+                        (pin.id || pin.type)
+                        && (!pin.id || r.record.id === pin.id)
+                        && (!pin.type || r.type === pin.type);
+
+                    const matches = [], rest = [];
+                    results.forEach(r => (matchesPin(r) ? matches : rest).push(r));
+                    results.splice(0, results.length, ...matches, ...rest);
+                    //results.splice(0, results.length);
                 }
             }
             /* const hide = [
@@ -83,36 +106,67 @@ module.exports = class QuickSwitcherPins {
         });
     }
     stop() {
-        Patcher.unpatchAll('QuickSwitcherPins');
+        Patcher.unpatchAll();
     }
     getSettingsPanel() {
         return SettingsPanel;
     }
 };
 
+function humanize(type) {
+    switch (type) {
+        case 'IN_APP_NAVIGATION': return 'In-App Menu';
+        case 'GROUP_DM': return 'Group DM';
+        case 'TEXT_CHANNEL': return 'Channel';
+        default: return type.split('_').map(s => s[0] + s.slice(1).toLowerCase()).join(' ');
+    }
+}
+
 const settingsStyles =
 `
 .qsp-panel {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
+    gap: 6px;
+    padding-top: 4px;
 }
 .qsp-row {
     display: flex;
     align-items: center;
-    background: var(--background-surface-high);
+    background: var(--background-base-lower);
     padding: 3px 5px 3px 0;
     border-radius: 6px;
     transition: opacity 0.1s;
     box-sizing: border-box;
 
     .bd-text-input {
-        flex: 1;
+        flex: 1 1 0;
         margin: 0;
     }
+
     > *:not(:last-child):not(:first-child) {
         margin-right: 4px !important;
+    }
+}
+.qsp-sizer {
+    display: inline-grid;
+    align-items: center;
+    flex: 0 0 auto;
+
+    &::after {
+        content: "Regex search must match (optional)";
+        visibility: hidden;
+        white-space: pre;
+        grid-area: 1 / 1;
+        font-size: 14px;
+        padding: 5px;
+        border: 1px solid;
+        font-family: inherit;
+    }
+
+    > input.bd-text-input {
+        grid-area: 1 / 1;
+        width: 100%;
     }
 }
 .qsp-grip {
@@ -139,28 +193,44 @@ const settingsStyles =
     justify-content: center;
 }
 input.bd-text-input {
+    background: var(--background-base-lowest);
     border-radius: var(--radius-xs);
-    min-width: 100px;
+    min-width: 0;
     height: 30px;
     padding: 5px;
     font-size: 14px;
+}
+select.qsp-select {
+    background: var(--background-base-lowest);
+    color: var(--text-default);
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    height: 30px;
+    font-size: 14px;
+    outline: none;
+    box-sizing: border-box;
+    cursor: pointer;
+    &:hover {
+        border-color: var(--interactive-text-hover);
+    }
+    &:focus {
+        border-color: var(--accent-1, var(--background-mod-strong));
+    }
 }
 `;
 
 function SettingsPanel() {
     /* const bdSettings = UI.buildSettingsPanel({
-        settings, onChange: (_, id, value) => {
-            settings.find(s => s.id == id).value = value;
-            Data.save('SuperReactionTweaks', 'settings', settings);
-        }
-    }); */
+            settings, onChange: (_, id, value) => settings[id] = value
+        }); */
 
     const generateKey = () => Math.random().toString(36).slice(2);
+    const resultTypes = QuickSwitcher.resultTypes();
 
     const [pins, setPins] = React.useState(() => {
-        const loaded = (Data.load('QuickSwitcherPins', 'pinned') || []).map(pin => ({ ...pin, _key: generateKey() }));
+        const loaded = (Data.load('pinned') || []).map(pin => ({ type: '', ...pin, _key: generateKey() }));
         if (!loaded.length || loaded[loaded.length - 1].id || loaded[loaded.length - 1].queryRegex) {
-            loaded.push({ id: '', queryRegex: '', _key: generateKey() });
+            loaded.push({ id: '', queryRegex: '', type: '', _key: generateKey() });
         }
         return loaded;
     });
@@ -171,7 +241,6 @@ function SettingsPanel() {
     const savePins = (updatedPins) => {
         setPins(updatedPins);
         Data.save(
-            'QuickSwitcherPins',
             'pinned',
             updatedPins.filter(pin => pin.id || pin.queryRegex).map(({ _key, ...rest }) => rest)
         );
@@ -183,7 +252,7 @@ function SettingsPanel() {
 
         // add a new empty row when the empty row is typed into
         if (index === nextPins.length - 1 && (nextPins[index].id || nextPins[index].queryRegex)) {
-            nextPins.push({ id: '', queryRegex: '', _key: generateKey() });
+            nextPins.push({ id: '', queryRegex: '', type: '', _key: generateKey() });
         }
 
         savePins(nextPins);
@@ -256,20 +325,33 @@ function SettingsPanel() {
                         ['8', '16'].map(cx => ['6', '12', '18'].map(cy => rce('circle', { cx, cy, r: '2', key: cx + cy })))
                     )
                 ),
+                rce('select', {
+                    className: 'qsp-select',
+                    value: pin.type || '',
+                    onChange: (e) => updatePin(index, 'type', e.target.value),
+                    onBlur: (e) => handleBlur(index, e)
+                },
+                    rce('option', { value: '' }, 'All Types'),
+                    resultTypes.map(type =>
+                        rce('option', { key: type, value: type }, humanize(type))
+                    )
+                ),
                 rce('input', {
                     className: 'bd-text-input',
-                    placeholder: 'Server/user/channel/bot ID',
+                    placeholder: 'Some ID',
                     value: pin.id || '',
                     onChange: (e) => updatePin(index, 'id', e.target.value),
                     onBlur: (e) => handleBlur(index, e)
                 }),
-                rce('input', {
-                    className: 'bd-text-input',
-                    placeholder: 'Regex search must match (optional)',
-                    value: pin.queryRegex || '',
-                    onChange: (e) => updatePin(index, 'queryRegex', e.target.value),
-                    onBlur: (e) => handleBlur(index, e)
-                }),
+                rce('div', { className: 'qsp-sizer' },
+                    rce('input', {
+                        className: 'bd-text-input',
+                        placeholder: 'Regex search must match (optional)',
+                        value: pin.queryRegex || '',
+                        onChange: (e) => updatePin(index, 'queryRegex', e.target.value),
+                        onBlur: (e) => handleBlur(index, e)
+                    })
+                ),
                 rce('button', {
                     className: 'bd-button bd-button-filled qsp-del bd-button-color-red',
                     onClick: () => savePins(pins.filter((_, idx) => idx !== index)),
