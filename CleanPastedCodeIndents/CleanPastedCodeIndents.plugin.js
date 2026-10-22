@@ -9,20 +9,17 @@
  * @runAt idle
  */
 
-const { Webpack, Patcher, Utils, React, Components, UI, Data } = BdApi;
+const Bd = new BdApi('CleanPastedCodeIndents');
+const { Webpack, Patcher, Utils, React, Components, UI, Data } = Bd;
 const Filters = Webpack.Filters;
 
-const [HistoryEditorModule, HistoryEditorKey] = Webpack.getWithKey(
-    t => t.withSingleEntry,
-    { target: Webpack.getBySource('withSingleEntry:(') }
-);
-const HistoryEditor = HistoryEditorModule[HistoryEditorKey];
-const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getMangled(
+const HistoryEditor = Webpack.getByKeys('withSingleEntry', { searchExports: true });
+const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getBySource(
     'Could not completely normalize the editor',
-    Object.fromEntries(['Editor', 'Node', 'Element'].map(k => [k, Filters.byKeys('is' + k)]))
+    { map: Object.fromEntries(['Editor', 'Node', 'Element'].map(k => [k, Filters.byKeys('is' + k)])) }
 );
 
-const { codeBlock } = Webpack.getByKeys("defaultRules", "parseTopic").defaultRules;
+const { codeBlock } = Webpack.getByKeys('defaultRules', 'parseTopic').defaultRules;
 const [ divButton ] = Object.values(Webpack.getBySource('defaultProps={tag:"div",role:"button"'));
 
 const settings = [
@@ -34,20 +31,39 @@ const settings = [
         value: true
     },
 ];
+for (const setting of settings) {
+    Object.defineProperty(settings, setting.id, {
+        get: () => setting.value = (Data.load(setting.id) ?? setting.value),
+        set: (value) => Data.save(setting.id, setting.value = value) 
+    });
+}
+function updateSettings() {
+    const version = Data.load('settingsVersion') ?? 0;
+    if (version < 1) {
+        Data.delete('settings');
+        Data.save('settingsVersion', 1);
+    }
+}
 
 module.exports = class CleanPastedCodeIndents {
     start() {
-        Object.assign(settings, Data.load('CleanPastedCodeIndents', 'settings'));
+        updateSettings();
+
         loadModel();
-        Patcher.instead('CleanPastedCodeIndents', codeBlock, 'react', (_, args, original) => {
+
+        Patcher.instead(codeBlock, 'react', (_, args, original) => {
+            const cleanedText = cleanIndentation(args[0].content.split('\n'));
+            if (!args[0].otherContent && cleanedText === args[0].content) {
+                return original(...args);
+            }
             return React.createElement(Components.ErrorBoundary,
-                { name: "CleanPastedCodeIndents", id: "CodeBlockWrapper" },
-                React.createElement(CodeBlockWrapper, { original, args })
+                { name: 'CleanPastedCodeIndents', id: "CodeBlockWrapper" },
+                React.createElement(CodeBlockWrapper, { original, args, cleanedText })
             );
         });
 
         let avoidInfiniteLoop = false;
-        Patcher.before('CleanPastedCodeIndents', HistoryEditor, 'withSingleEntry', (_, args) => {
+        Patcher.before(HistoryEditor, 'withSingleEntry', (_, args) => {
             const editor = args[0];
             const callback = args[1];
 
@@ -145,7 +161,7 @@ module.exports = class CleanPastedCodeIndents {
                     const prevIndent = " ".repeat(prevText.search(/\S|$/));
 
                     editor.selection = pastedTextSelection;
-                    const pastedText = getFragmentText(editor);
+                    const pastedText = getFragmentText(editor).replace(/\t/g, "    ");
 
                     const lines = pastedText.split('\n');
                     const newText = cleanIndentation(lines, atStartOfLine, prevIndent, deltaIndent);
@@ -160,32 +176,99 @@ module.exports = class CleanPastedCodeIndents {
         });
     }
     stop() {
-        Patcher.unpatchAll('CleanPastedCodeIndents');
+        Patcher.unpatchAll();
     }
     getSettingsPanel() {
-        return UI.buildSettingsPanel({ settings, onChange: (_, id, value) => {
-            settings.find(s => s.id == id).value = value;
-            Data.save('CleanPastedCodeIndents', 'settings', settings);
-        }});
+        return UI.buildSettingsPanel({
+            settings, onChange: (_, id, value) => settings[id] = value
+        });
     }
 };
 
 function cleanIndentation(lines, atStartOfLine = false, prevIndent = "", deltaIndent = 0) {
-    if (lines.length <= 1) {
-        return lines.join('\n').trimStart();
+    if (lines.length === 0) {
+        return "";
     }
+
+    const removedFirst = preprocessLines(lines);
+
+    if (lines.length <= 1) {
+        if (removedFirst) {
+            lines.unshift(removedFirst);
+        }
+        return lines.map(line => line.trim()).join('\n');
+    }
+
     const { minIndent, indentSize } = calculateIndentInfo(lines);
+    
     if (minIndent !== Infinity) {
         const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))];
         const newLines = [
             (atStartOfLine ? prevIndent : " ".repeat(deltaIndent)) + trimmedLines[0],
             ...trimmedLines.slice(1).map(line => prevIndent + " ".repeat(indentSize) + line)
         ];
+        if (removedFirst) {
+            newLines.unshift(removedFirst);
+        }
         return newLines.join('\n');
     }
 }
 
+function preprocessLines(lines) {
+    if (!lines.length) return null;
+
+    const identifier = String.raw`[\p{ID_Start}_][\p{ID_Continue}_]*`;
+    const trailingComment = String.raw`(?:\s*(?:\/\/.*|\/\*.*\*\/))?\s*`;
+
+    const noArgs = new RegExp(`^${trailingComment}$`);
+    const oneIdentifier = new RegExp(`^\\s*${identifier}${trailingComment}$`, "u");
+    const defineArgs = new RegExp(
+        `^\\s*${identifier}(?:\\([^()]*\\))?(?:\\s+.*)?${trailingComment}$`,
+        "u"
+    );
+
+    const validDefine = tail =>
+        defineArgs.test(tail) && !/\\\s*(?:\/\/.*|\/\*.*\*\/)?$/.test(tail);
+    const hasArg = /^\s*\S.*$/;
+
+    const valid = {
+        define: validDefine,
+        error: tail => !noArgs.test(tail),
+        import: tail => hasArg.test(tail),
+        pragma: tail => hasArg.test(tail),
+        elif: tail => hasArg.test(tail),
+        if: tail => hasArg.test(tail),
+        include: tail => hasArg.test(tail),
+        undef: tail => oneIdentifier.test(tail),
+        else: tail => noArgs.test(tail),
+        ifdef: tail => oneIdentifier.test(tail),
+        line: tail => /^\s+(?:\d+|default|hidden)\b.*$/i.test(tail),
+        using: tail => hasArg.test(tail),
+        endif: tail => noArgs.test(tail),
+        ifndef: tail => oneIdentifier.test(tail),
+        warning: tail => !noArgs.test(tail),
+        region: _ => true,
+        endregion: _ => true,
+        nullable: tail =>
+            /^\s+(?:enable|disable|restore)(?:\s+(?:annotations|warnings))?\s*$/i
+                .test(tail)
+    };
+
+    const match = lines[0].trimStart().match(/^#\s*([A-Za-z]+)\b(.*)$/);
+    if (match) {
+        const [, directive, tail] = match;
+        if (Object.hasOwn(valid, directive) && valid[directive](tail)) {
+            const firstLine = lines[0];
+            lines.shift();
+            return firstLine.trimStart();
+        }
+    }
+    return null;
+}
+
+
 function calculateIndentInfo(lines) {
+    const firstLineIndent = lines[0].search(/\S|$/);
     const nextLineIndent = lines[1].search(/\S|$/);
 
     let minIndent = Infinity;
@@ -206,9 +289,12 @@ function calculateIndentInfo(lines) {
         }
     }
 
-    const tabSize = findIndentSize(indents);
+    if (minIndent < nextLineIndent || firstLineIndent >= nextLineIndent) {
+        return { minIndent, indentSize: 0 };
+    }
     const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))].filter(line => line.trim() !== "");
-    const heuristicAddIndentLevel = minIndent >= nextLineIndent && model.predict(buildModelEntries(trimmedLines, tabSize));
+    const tabSize = findIndentSize(indents);
+    const heuristicAddIndentLevel = model.predict(buildModelEntries(trimmedLines, tabSize));
     const indentSize = heuristicAddIndentLevel ? tabSize : 0;
 
     return { minIndent, indentSize: indentSize };
@@ -216,13 +302,16 @@ function calculateIndentInfo(lines) {
 
 var findInReactTree = (root, filter) => Utils.findInTree(root, filter, { walkable: ['props', 'children'] });
 
-function CodeBlockWrapper({ original, args }) {
+function CodeBlockWrapper({ original, args, cleanedText }) {
     const [cleaned, setCleaned] = React.useState(false);
 
     if (args[0].otherContent) {
         [args[0].otherContent, args[0].content] = [args[0].content, args[0].otherContent];
     } else {
-        args[0].otherContent = cleanIndentation(args[0].content.split('\n'));
+        args[0].otherContent = cleanedText;
+        if (settings.cleanCodeBlocksByDefault) {
+            setCleaned(true);
+        }
     }
     const tree = original(...args);
 
@@ -231,7 +320,15 @@ function CodeBlockWrapper({ original, args }) {
     if (targetNode) {
         const existingChildren = React.Children.toArray(targetNode.props.children);
         targetNode.props.children = [
-            ...existingChildren,
+            ...existingChildren.map(child => {
+                // makes the copy button re-render to get rid of the checkmark each time the indent button is clicked
+                if (child.props.hasOwnProperty('text')) {
+                    return React.cloneElement(child, {
+                        key: cleaned ? "cleaned" : "original"
+                    });
+                }
+                return child;
+            }),
             React.createElement(divButton, {
                 onClick: (e) => {
                     e.stopPropagation();
@@ -441,7 +538,7 @@ class TinyIndentTransformer {
     }
 
     _lineBytes(rawText) {
-        const bytes = this.encoder.encode(rawText.replace(/\t/g, "    ").trimStart());
+        const bytes = this.encoder.encode(rawText.replace(/\t/g, "    ").trim());
         const max = this.maxBytesPerLine;
         
         if (bytes.length <= max) {
