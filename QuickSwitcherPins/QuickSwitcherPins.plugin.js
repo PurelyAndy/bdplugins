@@ -27,6 +27,7 @@ const QuickSwitcher = Webpack.getBySource(
 
 const regexPattern = /^\/(.+)\/([dgimsuvy]*)$/;
 
+/** @type {Array<any> & Record<string, any>} */
 /* const settings = [
     {
         id: 'hideWhichUsers',
@@ -44,10 +45,10 @@ const regexPattern = /^\/(.+)\/([dgimsuvy]*)$/;
     }
 ];
 for (const setting of settings) {
-    Object.defineProperty(settings, setting.id, {
+    let _ = Object.defineProperty(settings, setting.id, {
         get: () => setting.value = (Data.load(setting.id) ?? setting.value),
-        set: (value) => Data.save(setting.id, setting.value = value) 
-    });
+        set: (value) => Data.save(setting.id, setting.value = value)
+    })[setting.id];
 }
 const shouldHideBlockedUsers = () => settings.hideWhichUsers & 1 == 1;
 const shouldHideIgnoredUsers = () => settings.hideWhichUsers & 2 == 2; */
