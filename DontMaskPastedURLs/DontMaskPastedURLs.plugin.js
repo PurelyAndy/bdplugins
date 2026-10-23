@@ -28,6 +28,7 @@ const SlateRange = Webpack.getModule(
     { searchExports: true }
 );
 
+/** @type {Array<any> & Record<string, any>} */
 const settings = [
     {
         id: 'maskUnlessFullSelection',
@@ -38,10 +39,10 @@ const settings = [
     },
 ];
 for (const setting of settings) {
-    Object.defineProperty(settings, setting.id, {
+    let _ = Object.defineProperty(settings, setting.id, {
         get: () => setting.value = (Data.load(setting.id) ?? setting.value),
         set: (value) => Data.save(setting.id, setting.value = value)
-    });
+    })[setting.id];
 }
 function updateSettings() {
     const version = Data.load('settingsVersion') ?? 0;
