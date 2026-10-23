@@ -22,6 +22,7 @@ const { Editor, Node: SlateNode, Element: SlateElement } = Webpack.getBySource(
 const { codeBlock } = Webpack.getByKeys('defaultRules', 'parseTopic').defaultRules;
 const [ divButton ] = Object.values(Webpack.getBySource('defaultProps={tag:"div",role:"button"'));
 
+/** @type {Array<any> & Record<string, any>} */
 const settings = [
     {
         id: 'cleanCodeBlocksByDefault',
@@ -32,10 +33,10 @@ const settings = [
     },
 ];
 for (const setting of settings) {
-    Object.defineProperty(settings, setting.id, {
+    let _ = Object.defineProperty(settings, setting.id, {
         get: () => setting.value = (Data.load(setting.id) ?? setting.value),
-        set: (value) => Data.save(setting.id, setting.value = value) 
-    });
+        set: (value) => Data.save(setting.id, setting.value = value)
+    })[setting.id];
 }
 function updateSettings() {
     const version = Data.load('settingsVersion') ?? 0;
@@ -200,7 +201,7 @@ function cleanIndentation(lines, atStartOfLine = false, prevIndent = "", deltaIn
     }
 
     const { minIndent, indentSize } = calculateIndentInfo(lines);
-    
+
     if (minIndent !== Infinity) {
         const trimmedLines = [lines[0].slice(Math.min(minIndent, lines[0].search(/\S/))), ...lines.slice(1).map(line => line.slice(minIndent))];
         const newLines = [
@@ -395,7 +396,7 @@ function findIndentSize(indents) {
             diffs.push(diff);
         }
     }
-    
+
     return diffs.reduce((a, b) => {
         while (b !== 0) {
             [a, b] = [b, a % b];
@@ -540,7 +541,7 @@ class TinyIndentTransformer {
     _lineBytes(rawText) {
         const bytes = this.encoder.encode(rawText.replace(/\t/g, "    ").trim());
         const max = this.maxBytesPerLine;
-        
+
         if (bytes.length <= max) {
             return bytes;
         }
@@ -553,7 +554,7 @@ class TinyIndentTransformer {
         while (headEnd > 0 && (bytes[headEnd] & 0xC0) === 0x80) {
             headEnd--;
         }
-        
+
         let tailStart = bytes.length - tailBytes;
         while (tailStart < bytes.length && (bytes[tailStart] & 0xC0) === 0x80) {
             tailStart++;
@@ -584,7 +585,7 @@ class TinyIndentTransformer {
                 for (let j = 0; j < bytes.length; j++) {
                     tokens[offset + j] = bytes[j];
                 }
-                
+
                 for (let j = 0; j < this.maxBytesPerLine; j++) {
                     indents[i * this.maxBytesPerLine + j] = entries[i].relIndent;
                 }
@@ -615,7 +616,7 @@ class TinyIndentTransformer {
                 for (let in_d = 0; in_d < dModel; in_d++) {
                     sum += X[i * dModel + in_d] * wIn[out_d * dModel + in_d];
                 }
-                
+
                 if (out_d < dModel) {
                     Q[i * dModel + out_d] = sum;
                 } else if (out_d < dModel * 2) {
@@ -643,9 +644,9 @@ class TinyIndentTransformer {
                     for (let d = 0; d < headDim; d++) {
                         dot += Q[i * dModel + h * headDim + d] * K[j * dModel + h * headDim + d];
                     }
-                    
+
                     scores[j] = dot * scale;
-                    
+
                     if (scores[j] > maxScore) {
                         maxScore = scores[j];
                     }
@@ -692,7 +693,7 @@ class TinyIndentTransformer {
         };
 
         const norm1W = this.w['transformerEncoder.layers.0.norm1.weight'], norm1B = this.w['transformerEncoder.layers.0.norm1.bias'];
-        
+
         for (let i = 0; i < seqLen; i++) {
             layerNorm(X, i * dModel, dModel, norm1W, norm1B);
         }
