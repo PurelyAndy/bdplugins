@@ -10,7 +10,7 @@
  */
 
 const Bd = new BdApi('BlockAccidentalApostropheSends');
-const { Webpack, Patcher, Utils, React, Components, UI, Data } = Bd;
+const { Webpack, Patcher, React, UI, Data } = Bd;
 const Filters = Webpack.Filters;
 const settings = [
     {
@@ -42,7 +42,7 @@ const settings = [
 for (const setting of settings) {
     Object.defineProperty(settings, setting.id, {
         get: () => setting.value = (Data.load(setting.id) ?? setting.value),
-        set: (value) => Data.save(setting.id, setting.value = value) 
+        set: (value) => Data.save(setting.id, setting.value = value)
     });
 }
 function updateSettings() {
