@@ -2,7 +2,7 @@
  * @name BringBackTenor
  * @author PurelyAndy
  * @description Brings back Tenor GIF search
- * @version 1.0.1
+ * @version 1.1.0
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/BringBackTenor
@@ -12,27 +12,35 @@
 "use strict";
 
 const Bd = new BdApi('BringBackTenor');
-const { Patcher, Webpack } = Bd;
-const Filters = Webpack.Filters;
+const { Patcher, Webpack, Webpack: { Filters }, React } = Bd;
 
 const API_V2_KEY = 'AIzaSyAp4Ie-x-F5nLqwoqvDFrJGI4purWdGIVo';
 
 const KlipyTextModule = Webpack.getBySource(
     '="Klipy"',
-    { map: { getSearchKlipyText: Filters.byStrings('intl') } },
+    { map: { getSearchKlipyText: Filters.byStrings('intl') } }
 );
 
 const GIFPicker = Webpack.getBySource(
     'type:"GIF_PICKER_SUGGESTIONS_SUCCESS",',
     {
         map: {
-            foundSearch: Filters.byStrings('(){var'),
+            foundSearchDebounced: Filters.byStrings('(){var'),
+            foundSearch: Filters.byStrings('.GIFS_SEARCH,'),
             foundTrending: Filters.byStrings('.GIFS_TRENDING_GIFS,'),
             foundTrendingCategories: Filters.byStrings('.GIFS_TRENDING,'),
         },
         mapDeclarations: true
     }
 );
+
+const GIFResults = Webpack.getBySource('_video=null;_image=null', {
+    map: { Grid: Filters.byPrototypeKeys('selectItem') },
+    mapDeclarations: true
+});
+
+const HTTP = Webpack.getModule(m => typeof m === "object" && m.del && m.put, {searchExports: true});
+const Endpoints = Webpack.getModule(m => m.GIFS_SEARCH, {searchExports: true});
 
 const lodash = Webpack.getByKeys('bindAll', 'debounce');
 
@@ -44,42 +52,44 @@ function getMediaFormat(mediaFormat) {
     return mediaFormat === 'webm' ? 'webm' : mediaFormat === 'mp4' ? 'mp4' : mediaFormat === 'tinywebp' ? 'webp_transparent' : 'tinygif';
 }
 
-const throttledSearch = lodash.throttle((query) => {
-    fetchSearchResults(query).then(async results => {
-        Dispatcher.dispatch({
-            type: "GIF_PICKER_QUERY_SUCCESS",
-            query: query,
-            items: results || await getErrGifs("unspecified error"),
-        });
-    }).catch(async err => {
-        Dispatcher.dispatch({
-            type: "GIF_PICKER_QUERY_SUCCESS",
-            query: query,
-            items: await getErrGifs(err.stack),
-        });
+const throttledSearch = lodash.throttle(search, 500, { leading: true, trailing: true });
+
+function dispatchGifs(items, query) {
+    Dispatcher.dispatch({
+        type: "GIF_PICKER_QUERY_SUCCESS",
+        query: query,
+        items: items,
     });
-}, 500, { leading: true, trailing: true });
+}
 
 module.exports = class BringBackTenor {
     start() {
-        Patcher.after(KlipyTextModule, "getSearchKlipyText", (_, __, ret) => ret.replace('Klipy', 'Tenor'))
-        
-        Patcher.instead(GIFPicker, "foundSearch", (_, args, __) => {
-            const query = args[0];
-            throttledSearch(query);
+        Patcher.instead(GIFResults.Grid.prototype, "selectItem", (that, args, original) => {
+            const [item] = args;
+            if (item.id !== "info-gif") return original.apply(that, args);
+            Bd.UI.showConfirmationModal(
+                "BringBackTenor – Error",
+                [
+                    React.createElement("style", null, `pre { user-select: text; }`),
+                    item.url
+                ],
+                {size: "bd-modal-large"});
         });
 
-        Patcher.instead(GIFPicker, "foundTrending", (_, __, ___) => {
-            fetchTrendingGifsResults(50).then(results => {
-                Dispatcher.dispatch({
-                    type: "GIF_PICKER_QUERY_SUCCESS",
-                    items: results || getErrGifs("unspecified error"),
-                });
+        Patcher.after(KlipyTextModule, "getSearchKlipyText", (_, __, ret) => ret.replace('Klipy', 'Tenor'))
+
+        Patcher.instead(GIFPicker, "foundSearchDebounced", (_, args, __) => {
+            throttledSearch(args[0], args[2]);
+        });
+        Patcher.instead(GIFPicker, "foundSearch", (_, args, __) => {
+            search(args[0], args[2]);
+        });
+
+        Patcher.instead(GIFPicker, "foundTrending", (_, args, ___) => {
+            fetchTrendingGifsResults(args[0]).then(async results => {
+                dispatchGifs(results || await getErrGifs("unspecified error"));
             }).catch(async err => {
-                Dispatcher.dispatch({
-                    type: "GIF_PICKER_QUERY_SUCCESS",
-                    items: await getErrGifs(err.stack),
-                });
+                dispatchGifs(await getErrGifs(err.stack));
             });
         });
 
@@ -87,16 +97,16 @@ module.exports = class BringBackTenor {
             Promise.all([
                 fetchTrendingSearchResults(),
                 fetchTrendingGifsResults(1)
-            ]).then(([categories, gifs]) => {
+            ]).then(async ([categories, gifs]) => {
                 Dispatcher.dispatch({
                     type: "GIF_PICKER_TRENDING_FETCH_SUCCESS",
-                    trendingCategories: categories || getErrTrending("unspecified error"),
+                    trendingCategories: categories || await getErrTrending("unspecified error"),
                     trendingGIFPreview: (gifs && gifs[0]) || getErrGif()
                 });
             }).catch(async err => {
                 Dispatcher.dispatch({
                     type: "GIF_PICKER_TRENDING_FETCH_SUCCESS",
-                    trendingCategories: getErrTrending(err.stack),
+                    trendingCategories: await getErrTrending(err.stack),
                     trendingGIFPreview: getErrGif()
                 });
             });
@@ -107,7 +117,30 @@ module.exports = class BringBackTenor {
     }
 };
 
-function getErrTrending(error) {
+function search(query, limit) {
+    fetchSearchResults(query, limit).then(async results => {
+        dispatchGifs(results || await getErrGifs("unspecified error"), query);
+    }).catch(async err => {
+        const errGifs = await getErrGifs(err.stack);
+        HTTP.get({
+            url: Endpoints.GIFS_SEARCH,
+            query: {
+                q: query,
+                media_format: GIFPickerViewStore.getSelectedFormat(),
+                locale: LocaleStore.locale,
+                limit: limit
+            },
+            oldFormErrors: true, rejectWithError: true
+        }).then(r => {
+            let a = r.body;
+            dispatchGifs([...errGifs, ...a], query);
+        }).catch(async err2 => {
+            dispatchGifs(errGifs, query);
+        });
+    });
+}
+
+async function getErrTrending(error) {
     return [
         {
             name: "error getting trending categories",
@@ -115,13 +148,13 @@ function getErrTrending(error) {
         },
         {
             name: "",
-            src: makeInfoImage(error)
+            src: await makeInfoImage(error)
         }
     ];
 }
 
 function getErrGif() {
-    const errGif = {
+    return {
         id: "12307037628302986948",
         title: "scrolling through errors",
         url: "https://tenor.com/view/error-windows-glitch-gif-5012719",
@@ -137,13 +170,12 @@ function getErrGif() {
         height: 300,
         preview: "https://media.tenor.com/qsthhHhdjsQAAAAe/error-windows.png"
     };
-    return errGif;
 }
 async function getErrGifs(error) {
     return [getErrGif(), await makeInfoVideo(error)];
 }
 
-function makeInfoImage(error) {
+async function makeInfoImage(error) {
     const width = 400;
     const height = 300;
 
@@ -158,7 +190,7 @@ function makeInfoImage(error) {
     ctx.fillRect(0, 0, width, height);
     ctx.strokeRect(0, 0, width, height);
 
-    ctx.fillStyle = "#ff0000";
+    ctx.fillStyle = "#ff2020";
     ctx.font = "bold 38px monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
@@ -219,12 +251,48 @@ function makeInfoImage(error) {
         y += 14;
     }
 
-    let image = canvas.toDataURL("image/jpeg", 0.2);
+    let uri = canvas.toDataURL("image/jpeg", 0.2);
     for (let i = 0; i < 5; i++) {
-        const idx = Math.floor(512 * Math.random()) + image.length * (0.5 + i * 0.08);
-        image = image.substring(0, idx) + String.fromCharCode(Math.random() * 26 + 65) + image.substring(idx + 1);
+        const idx = Math.floor(512 * Math.random()) + uri.length * (0.3 + i * 0.12);
+        uri = uri.substring(0, idx) + String.fromCharCode(Math.random() * 26 + 65) + uri.substring(idx + 1);
     }
-    return image;
+
+    const img = await makeImageFromUri(uri);
+
+    const temp = document.createElement("canvas");
+    temp.width = width;
+    temp.height = height;
+
+    const tctx = temp.getContext("2d");
+
+    tctx.drawImage(img, 0, 0);
+
+    const gradient = tctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
+    gradient.addColorStop(0.5, "rgba(0, 0, 0, 0.25)");
+    gradient.addColorStop(1, "rgba(0, 0, 0, 1)");
+
+    tctx.globalCompositeOperation = "destination-in";
+    tctx.fillStyle = gradient;
+    tctx.fillRect(0, 0, width, height);
+
+    ctx.drawImage(temp, 0, 0);
+
+    return canvas.toDataURL("image/png");
+}
+
+async function makeImageFromUri(uri) {
+    const img = new Image();
+
+    const loaded = new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+    });
+
+    img.src = uri;
+    await loaded;
+
+    return img;
 }
 
 async function makeInfoVideo(error) {
@@ -236,17 +304,8 @@ async function makeInfoVideo(error) {
     canvas.height = height;
     const ctx = canvas.getContext("2d");
 
-    const preview = makeInfoImage(error);
-    const img = new Image();
-
-    const loaded = new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-    });
-
-    img.src = preview;
-    await loaded;
-
+    const preview = await makeInfoImage(error);
+    const img = await makeImageFromUri(preview);
     ctx.drawImage(img, 0, 0);
 
     const stream = canvas.captureStream(0);
@@ -287,12 +346,7 @@ async function makeInfoVideo(error) {
     return {
         id: "info-gif",
         title: error,
-        url:
-        `
-        \`\`\`js
-        ${error}
-        \`\`\`
-        `,
+        url: "```js\n"+error+"\n```",
         src: videoUrl,
         gif_src: videoUrl,
         width,
@@ -316,6 +370,8 @@ function mapGifResult(result) {
 }
 
 function fetchTenorResults(endpoint, queryParams) {
+    //return Promise.reject(new Error("test"));
+
     const url = new URL(`https://tenor.googleapis.com/v2/${endpoint}`);
     const params = {
         ...queryParams,
@@ -342,10 +398,10 @@ function fetchTenorResults(endpoint, queryParams) {
         });
 }
 
-function fetchSearchResults(query) {
+function fetchSearchResults(query, limit) {
     return fetchTenorResults('search', {
         q: query,
-        limit: '50',
+        limit: limit,
         fields: 'results.id,results.title,results.media_formats,results.itemurl',
         searchfilter: 'none',
         component: 'web_desktop'
@@ -357,7 +413,7 @@ function fetchSearchResults(query) {
     });
 }
 
-function fetchTrendingGifsResults(limit = 50) {
+function fetchTrendingGifsResults(limit) {
     return fetchTenorResults('featured', {
         limit: String(limit),
         fields: 'results.id,results.title,results.media_formats,results.itemurl'
