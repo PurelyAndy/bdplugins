@@ -2,7 +2,7 @@
  * @name BringBackTenor
  * @author PurelyAndy
  * @description Brings back Tenor GIF search
- * @version 1.1.0
+ * @version 1.1.1
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/BringBackTenor
@@ -79,10 +79,10 @@ module.exports = class BringBackTenor {
         Patcher.after(KlipyTextModule, "getSearchKlipyText", (_, __, ret) => ret.replace('Klipy', 'Tenor'))
 
         Patcher.instead(GIFPicker, "foundSearchDebounced", (_, args, __) => {
-            throttledSearch(args[0], args[2]);
+            throttledSearch(args[0], args[2] ?? 50);
         });
         Patcher.instead(GIFPicker, "foundSearch", (_, args, __) => {
-            search(args[0], args[2]);
+            search(args[0], args[2] ?? 50);
         });
 
         Patcher.instead(GIFPicker, "foundTrending", (_, args, ___) => {
