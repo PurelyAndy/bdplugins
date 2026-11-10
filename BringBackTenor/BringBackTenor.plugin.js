@@ -2,7 +2,7 @@
  * @name BringBackTenor
  * @author PurelyAndy
  * @description Brings back Tenor GIF search
- * @version 1.1.1
+ * @version 1.1.2
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/BringBackTenor
@@ -16,23 +16,21 @@ const { Patcher, Webpack, Webpack: { Filters }, React } = Bd;
 
 const API_V2_KEY = 'AIzaSyAp4Ie-x-F5nLqwoqvDFrJGI4purWdGIVo';
 
-const KlipyTextModule = Webpack.getBySource(
-    '="Klipy"',
-    { map: { getSearchKlipyText: Filters.byStrings('intl') } }
-);
+const Intl = BdApi.Webpack.getModule((x) => x.intl);
+const intlKey = Object.keys(Intl.t).filter(m => Intl.intl.string(Intl.t[m]).includes("Klipy"))[0];
+const KlipyTextModule = BdApi.Utils.mapObject(BdApi.Webpack.getModule(x => Object.values(x).filter(m => m?.toString?.().includes(intlKey)).length > 0), {
+    getSearchKlipyText: () => true
+})
 
-const GIFPicker = Webpack.getBySource(
-    'type:"GIF_PICKER_SUGGESTIONS_SUCCESS",',
-    {
-        map: {
-            foundSearchDebounced: Filters.byStrings('(){var'),
-            foundSearch: Filters.byStrings('.GIFS_SEARCH,'),
-            foundTrending: Filters.byStrings('.GIFS_TRENDING_GIFS,'),
-            foundTrendingCategories: Filters.byStrings('.GIFS_TRENDING,'),
-        },
-        mapDeclarations: true
-    }
-);
+const GIFPickerRaw = BdApi.Webpack.getBySource('type:"GIF_PICKER_SUGGESTIONS_SUCCESS",', { raw: true });
+const GIFPickerExports = BdApi.Utils.mapObject(GIFPickerRaw.exports, {
+    foundTrending: BdApi.Webpack.Filters.byStrings('.GIFS_TRENDING_GIFS,'),
+    foundTrendingCategories: BdApi.Webpack.Filters.byStrings('.GIFS_TRENDING,'),
+});
+const GIFPickerDeclarations = BdApi.Utils.mapObject(GIFPickerRaw.declarations, {
+    foundSearchDebounced: BdApi.Webpack.Filters.byStrings('(){var'),
+    foundSearch: BdApi.Webpack.Filters.byStrings('.GIFS_SEARCH,'),
+});
 
 const GIFResults = Webpack.getBySource('_video=null;_image=null', {
     map: { Grid: Filters.byPrototypeKeys('selectItem') },
@@ -78,14 +76,14 @@ module.exports = class BringBackTenor {
 
         Patcher.after(KlipyTextModule, "getSearchKlipyText", (_, __, ret) => ret.replace('Klipy', 'Tenor'))
 
-        Patcher.instead(GIFPicker, "foundSearchDebounced", (_, args, __) => {
+        Patcher.instead(GIFPickerDeclarations, "foundSearchDebounced", (_, args, __) => {
             throttledSearch(args[0], args[2] ?? 50);
         });
-        Patcher.instead(GIFPicker, "foundSearch", (_, args, __) => {
+        Patcher.instead(GIFPickerDeclarations, "foundSearch", (_, args, __) => {
             search(args[0], args[2] ?? 50);
         });
 
-        Patcher.instead(GIFPicker, "foundTrending", (_, args, ___) => {
+        Patcher.instead(GIFPickerExports, "foundTrending", (_, args, ___) => {
             fetchTrendingGifsResults(args[0]).then(async results => {
                 dispatchGifs(results || await getErrGifs("unspecified error"));
             }).catch(async err => {
@@ -93,7 +91,7 @@ module.exports = class BringBackTenor {
             });
         });
 
-        Patcher.instead(GIFPicker, "foundTrendingCategories", (_, __, ___) => {
+        Patcher.instead(GIFPickerExports, "foundTrendingCategories", (_, __, ___) => {
             Promise.all([
                 fetchTrendingSearchResults(),
                 fetchTrendingGifsResults(1)
