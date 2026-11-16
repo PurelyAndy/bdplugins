@@ -2,7 +2,7 @@
  * @name BringBackTenor
  * @author PurelyAndy
  * @description Brings back Tenor GIF search
- * @version 1.1.2
+ * @version 1.1.3
  * @authorId 702958966308601957
  * @authorLink https://github.com/PurelyAndy
  * @source https://github.com/PurelyAndy/bdplugins/tree/main/BringBackTenor
@@ -16,9 +16,7 @@ const { Patcher, Webpack, Webpack: { Filters }, React } = Bd;
 
 const API_V2_KEY = 'AIzaSyAp4Ie-x-F5nLqwoqvDFrJGI4purWdGIVo';
 
-const Intl = BdApi.Webpack.getModule((x) => x.intl);
-const intlKey = Object.keys(Intl.t).filter(m => Intl.intl.string(Intl.t[m]).includes("Klipy"))[0];
-const KlipyTextModule = BdApi.Utils.mapObject(BdApi.Webpack.getModule(x => Object.values(x).filter(m => m?.toString?.().includes(intlKey)).length > 0), {
+const KlipyTextModule = BdApi.Utils.mapObject(BdApi.Webpack.getModule(x => Object.values(x).filter(m => m?.toString?.().includes('T1Frnm')).length > 0), {
     getSearchKlipyText: () => true
 })
 
